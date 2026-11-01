@@ -1,14 +1,14 @@
 # Builds AztroMidi into ./dist
-#   .\build.ps1                -> small exe, needs the .NET 10 Desktop Runtime installed
-#   .\build.ps1 -SelfContained -> bigger exe that runs on any Windows 10/11 x64 PC
-param([switch]$SelfContained)
+#   .\build.ps1                -> standalone exe, no runtime installation needed
+#   .\build.ps1 -FrameworkDependent -> small exe, needs the .NET 10 Desktop Runtime
+param([switch]$SelfContained, [switch]$FrameworkDependent, [string]$OutputDirectory = "dist")
 
 $ErrorActionPreference = "Stop"
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 $env:DOTNET_NOLOGO = "1"
 
 $project = Join-Path $PSScriptRoot "src\AztroMidi\AztroMidi.csproj"
-$out = Join-Path $PSScriptRoot "dist"
+$out = Join-Path $PSScriptRoot $OutputDirectory
 
 $publishArgs = @(
     "publish", $project,
@@ -18,7 +18,10 @@ $publishArgs = @(
     "-p:PublishSingleFile=true",
     "-p:IncludeNativeLibrariesForSelfExtract=true"
 )
-if ($SelfContained) {
+if ($SelfContained -and $FrameworkDependent) {
+    throw "Choose either -SelfContained or -FrameworkDependent."
+}
+if (!$FrameworkDependent) {
     $publishArgs += @("--self-contained", "true", "-p:EnableCompressionInSingleFile=true")
 } else {
     $publishArgs += @("--self-contained", "false")

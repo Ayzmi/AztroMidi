@@ -55,7 +55,8 @@ jobs:
           }
           Compress-Archive -Path out/small/* -DestinationPath "release/AztroMidi-$v-win-x64.zip"
           Compress-Archive -Path out/standalone/* -DestinationPath "release/AztroMidi-$v-win-x64-standalone.zip"
-          Copy-Item out/small/AztroMidi.exe "release/AztroMidi-$v.exe"
+          Copy-Item out/standalone/AztroMidi.exe "release/AztroMidi-$v.exe"
+          Copy-Item out/small/AztroMidi.exe "release/AztroMidi-$v-framework-dependent.exe"
           Get-ChildItem release | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
           } | Set-Content release/SHA256SUMS.txt -Encoding ascii
@@ -75,7 +76,8 @@ jobs:
           }
           $notes += ""
           $notes += "### Which download?"
-          $notes += "- **AztroMidi-$v.exe**: just the app (~400 KB). Needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)."
+          $notes += "- **AztroMidi-$v.exe**: standalone app. Download and run, no .NET installation needed."
+          $notes += "- **AztroMidi-$v-framework-dependent.exe**: smaller download; requires the .NET 10 Desktop Runtime."
           $notes += "- **AztroMidi-$v-win-x64-standalone.zip**: bigger, but runs on any Windows 10/11 x64 PC without installing anything."
           $notes += ""
           $notes += "Windows may show *Windows protected your PC* the first time because the app is new and not code-signed yet. Click **More info** and then **Run anyway**. You can compare the file with ``SHA256SUMS.txt`` to make sure it is the original."

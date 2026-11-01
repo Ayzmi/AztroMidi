@@ -17,6 +17,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Releases include `SHA256SUMS.txt`, and the release notes explain the Windows SmartScreen prompt.
 
 ### Changed
+- Local builds and the main release exe now bundle the .NET runtime, so Windows x64 users can run without installing .NET.
+- Keep the smaller runtime-dependent exe as a separate download; local builds support `-FrameworkDependent` and `-OutputDirectory`.
 - New desktop look: sidebar navigation, slimmer title bar with standard window buttons,
   Windows' own font, flatter panels and smaller corners.
 - Buttons and icons have accessible names for screen readers.

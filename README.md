@@ -28,7 +28,8 @@ Grab the latest version from **[Releases](https://github.com/Azmide/AztroMidi/re
 
 | File | For |
 |---|---|
-| `AztroMidi-x.y.z.exe` | Small download. Needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (Windows asks to install it on first start). |
+| `AztroMidi-x.y.z.exe` | Standalone app for Windows 10/11 x64. Download and run, no .NET installation needed (starting with the next release). |
+| `AztroMidi-x.y.z-framework-dependent.exe` | Smaller app; needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0). |
 | `AztroMidi-x.y.z-win-x64-standalone.zip` | Bigger, but runs on any Windows 10/11 x64 PC without installing anything. |
 
 **First run:** Windows may show *"Windows protected your PC"* because AztroMidi is new and not
@@ -147,8 +148,8 @@ Requires Windows and the [.NET 10 SDK](https://dotnet.microsoft.com/download/dot
 ```powershell
 dotnet run --project src/AztroMidi            # run the app
 dotnet run --project tests/AztroMidi.Tests    # run the tests
-.\build.ps1                                   # build dist\AztroMidi.exe
-.\build.ps1 -SelfContained                    # standalone build
+.\build.ps1                                   # standalone dist\AztroMidi.exe
+.\build.ps1 -FrameworkDependent               # smaller build, requires .NET
 ```
 
 ## Contributing
