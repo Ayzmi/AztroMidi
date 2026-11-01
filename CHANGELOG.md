@@ -24,6 +24,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Buttons and icons have accessible names for screen readers.
 
 ### Fixed
+- Recover null settings sections and library strings while keeping other saved preferences.
+- Write settings to a temporary file before replacement to avoid truncating the previous file during a failed write.
+- Use unique write-access probes instead of overwriting an existing `.write_test` file.
 - Reject truncated MIDI events and invalid chunk lengths without reading into another track.
 - Reject invalid time divisions and asynchronous format 2 files instead of playing incorrect timing.
 - Correct SMPTE 29.97 fps timing for MIDI files using drop-frame time division.

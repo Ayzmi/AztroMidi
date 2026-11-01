@@ -127,6 +127,35 @@ try
 }
 finally { File.Delete(smptePath); }
 
+Console.WriteLine("== Settings recovery");
+var settingsDir = Path.Combine(Path.GetTempPath(), $"aztromidi-settings-{Guid.NewGuid():N}");
+Directory.CreateDirectory(settingsDir);
+var settingsPath = Path.Combine(settingsDir, "settings.json");
+try
+{
+    File.WriteAllText(settingsPath, """{"Humanize":null,"Hotkeys":null,"Favorites":null,"LibraryFolder":null,"LastSong":null,"LastPage":null,"Speed":1.5}""");
+    var recovered = AppSettings.LoadFrom(settingsPath);
+    Check(recovered.Humanize != null && recovered.Hotkeys != null && recovered.Favorites != null,
+        "null settings sections recover to defaults");
+    Check(recovered.LibraryFolder == "" && recovered.LastSong == "" && recovered.LastPage == "Player",
+        "null settings strings recover to defaults");
+    Check(recovered.Speed == 1.5, "recovery preserves other preferences");
+    recovered.SaveTo(settingsPath);
+    Check(AppSettings.LoadFrom(settingsPath).Speed == 1.5, "settings replacement round trips");
+    Check(Directory.GetFiles(settingsDir).Length == 1, "successful save leaves no temporary files");
+    try { recovered.SaveTo(settingsDir); Check(false, "failed replacement reports failure"); }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    { Check(true, "failed replacement reports failure"); }
+    Check(Directory.GetFiles(settingsDir).Length == 1, "failed save cleans temporary file");
+    File.WriteAllText(settingsPath, "{broken");
+    Check(AppSettings.LoadFrom(settingsPath).Speed == 1, "corrupt JSON recovers to defaults");
+}
+finally
+{
+    File.Delete(settingsPath);
+    Directory.Delete(settingsDir);
+}
+
 Console.WriteLine("== Humanizer");
 var h = new Humanizer(new HumanizeSettings { TimingJitterMs = 10 }, seed: 1);
 var offsets = Enumerable.Range(0, 5000).Select(_ => h.TimingOffset() * 1000).ToList();

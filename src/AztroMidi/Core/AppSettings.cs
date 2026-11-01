@@ -105,7 +105,7 @@ public sealed class AppSettings
     {
         try
         {
-            var probe = Path.Combine(dir, ".write_test");
+            var probe = Path.Combine(dir, $".write-test-{Guid.NewGuid():N}");
             File.WriteAllText(probe, "");
             File.Delete(probe);
             return true;
@@ -115,12 +115,24 @@ public sealed class AppSettings
 
     public static AppSettings Load()
     {
+        try { return LoadFrom(FilePath); }
+        catch { return new AppSettings(); }
+    }
+
+    internal static AppSettings LoadFrom(string path)
+    {
         try
         {
-            var path = FilePath;
             if (File.Exists(path))
             {
                 var s = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), Json) ?? new AppSettings();
+                s.Humanize ??= new HumanizeSettings();
+                s.Hotkeys ??= new HotkeySettings();
+                s.Favorites ??= new List<string>();
+                s.Favorites.RemoveAll(string.IsNullOrWhiteSpace);
+                s.LibraryFolder ??= "";
+                s.LastSong ??= "";
+                s.LastPage ??= "Player";
                 if (s.Output == OutputMode.Background) s.Output = OutputMode.Keyboard; // removed in 1.3
                 return s;
             }
@@ -131,7 +143,23 @@ public sealed class AppSettings
 
     public void Save()
     {
-        try { File.WriteAllText(FilePath, JsonSerializer.Serialize(this, Json)); }
+        try { SaveTo(FilePath); }
         catch { /* not fatal */ }
     }
+
+    internal void SaveTo(string path)
+    {
+        string temporary = path + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            // Finish writing beside the destination before replacing the previous settings.
+            File.WriteAllText(temporary, JsonSerializer.Serialize(this, Json));
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
 }
