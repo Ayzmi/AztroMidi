@@ -5,16 +5,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-26
+
 ### Added
 - Drag & drop MIDI files or folders onto the window to move them into your library folder
-  (or copy, or only add to the list; see Settings → Dropped MIDI files).
+  (or copy them, or only add them to the list under Settings → Library → Dropped files).
 - Open `.mid` files from Explorer with AztroMidi; if it is already running, the files go to that window.
 - Right-click menu on songs: play, favorite, show in folder, copy path, remove from list.
 - Song lengths in the library.
 - Keyboard shortcuts: Space, arrow keys, +/−, Enter, Delete, Ctrl+F, Ctrl+O, Ctrl+1/2/3, Ctrl+M.
 - The playing song is shown in the title bar and the taskbar.
 - Window size, position and the last page are remembered.
-- Releases include `SHA256SUMS.txt`, and the release notes explain the Windows SmartScreen prompt.
+- Releases include `SHA256SUMS.txt` for verifying downloads.
 
 ### Changed
 - Local builds now go to `dist/latest` by default and accept absolute output paths.
