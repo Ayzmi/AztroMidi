@@ -1,11 +1,11 @@
-"""Generates src/AztroMidi/Assets/icon.ico (blue rounded square with piano keys)."""
+"""Generate the Windows app icon."""
 import os
 import sys
 
 from PIL import Image, ImageDraw
 
 SIZE = 256
-OUT = os.path.join(os.path.dirname(__file__), "..", "src", "AztroMidi", "Assets", "icon.ico")
+OUT = os.path.join(os.path.dirname(__file__), "..", "assets", "icon.ico")
 
 
 def lerp(a, b, t):

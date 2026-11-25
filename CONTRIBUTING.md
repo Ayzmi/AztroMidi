@@ -4,41 +4,39 @@ Thanks for wanting to help! Bug reports, ideas and pull requests are all welcome
 
 ## Getting started
 
-You need **Windows 10/11** and the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+You need **Windows 10/11 x64**, [Rust stable](https://rustup.rs/) with the MSVC toolchain,
+and Visual Studio Build Tools with the C++ desktop workload.
 
 ```powershell
-git clone https://github.com/Azmide/AztroMidi.git
+git clone https://github.com/Ayzmi/AztroMidi.git
 cd AztroMidi
-dotnet run --project src/AztroMidi            # start the app
-dotnet run --project tests/AztroMidi.Tests    # run the tests
+cargo run --locked
+cargo test --locked
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
 ```
 
-You can also open `AztroMidi.sln` in Visual Studio 2022+ or JetBrains Rider.
-
-> Tip: switch **Send to** to **Preview** while developing. Notes then play through your
-> speakers instead of being typed as key presses, so nothing ends up in your editor.
+Use **Preview on this PC** and set test hotkeys to **None** during local UI testing.
 
 ## Project structure
 
 | Path | What lives there |
 |---|---|
-| `src/AztroMidi/Core/` | The engine: MIDI parsing, key mapping, humanizer, player, input. No UI code. |
-| `src/AztroMidi/Controls/` | Custom WPF controls (the piano visualizer) |
-| `src/AztroMidi/Themes/Theme.xaml` | Colors, fonts and control styles |
-| `src/AztroMidi/*.xaml` | Windows: the main window and the mini player |
-| `tests/AztroMidi.Tests/` | Dependency-free tests for `Core` |
+| `src/midi.rs`, `src/schedule.rs`, `src/humanize.rs`, `src/keys.rs` | MIDI parsing, note scheduling, humanization and key mapping |
+| `src/playback.rs` | Playback thread, transport and output routing |
+| `src/desktop.rs`, `src/desktop/ui.rs` | Main desktop window and visualizer |
+| `src/library.rs`, `src/settings.rs` | Song management and portable preferences |
+| `src/win.rs`, `src/win/mini.rs` | Windows input, preview synth, single instance, global hotkeys and mini player |
+| `assets/` | App icon and Windows manifest |
 | `tools/` | Helper scripts (e.g. icon generator) |
 | `docs/` | Images and documentation |
 
 ## Guidelines
 
-- **Keep it light.** The app has zero NuGet dependencies and is ~400 KB. Please do not add a
-  package unless there is no reasonable alternative.
-- **Engine changes need tests.** Add a check to `tests/AztroMidi.Tests/Program.cs`.
-- **Match the existing style.** `.editorconfig` covers formatting; private fields are
-  `_camelCase`, file-scoped namespaces, comments explain *why*, not *what*.
-- **UI colors come from `Theme.xaml`.** Use the existing brushes (`Brand`, `Surface`, `Ink`...)
-  instead of hard-coded colors.
+- **Keep it light.** Prefer the standard library and existing dependencies.
+- **Engine changes need tests.** Add coverage in the relevant Rust module.
+- **Format with rustfmt.** Keep comments short and explain the reasoning.
+- **Reuse the palette.** The desktop and mini player share the colors in `src/appearance.rs`.
 - **No game exploits.** AztroMidi only sends normal key presses. Changes that inject into
   Roblox, read its memory or bypass its anti-cheat will not be accepted.
 
@@ -54,11 +52,11 @@ CI builds the app and runs the tests on every pull request.
 ## Releasing (maintainers)
 
 1. Move the **Unreleased** notes in `CHANGELOG.md` under a new version heading, e.g. `## [1.4.0] - 2026-11-15`.
-2. Update `<Version>` in `src/AztroMidi/AztroMidi.csproj`.
+2. Update the package version in `Cargo.toml` and refresh `Cargo.lock`.
 3. Commit, then tag and push:
    ```powershell
    git tag v1.4.0
    git push origin main --tags
    ```
-4. The **Release** workflow builds both downloads and publishes the GitHub Release
+4. The **Release** workflow builds the executable and zip and publishes the GitHub Release
    with the notes from `CHANGELOG.md`.

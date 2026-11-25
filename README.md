@@ -1,167 +1,76 @@
-<div align="center">
+<p align="center">
+  <img src="docs/images/logo.png" width="80" height="80" alt="AztroMidi logo">
+</p>
 
-<img src="docs/images/logo.png" width="72" alt="AztroMidi logo" />
+<h1 align="center">AztroMidi</h1>
 
-# AztroMidi
+<p align="center">A Windows MIDI player for Roblox pianos.</p>
 
-**A lightweight MIDI auto-player for Roblox pianos, with playback that sounds human.**
+<p align="center">
+  <a href="https://github.com/Ayzmi/AztroMidi/releases">Downloads</a>
+  · <a href="#quick-start">Quick start</a>
+  · <a href="#build-from-source">Build from source</a>
+  · <a href="LICENSE">MIT License</a>
+</p>
 
-[![Latest release](https://img.shields.io/github/v/release/Azmide/AztroMidi?color=0ba6df&label=download)](https://github.com/Azmide/AztroMidi/releases/latest)
-[![CI](https://github.com/Azmide/AztroMidi/actions/workflows/ci.yml/badge.svg)](https://github.com/Azmide/AztroMidi/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-22c55e)](LICENSE)
-![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-2a2f36)
-![.NET](https://img.shields.io/badge/.NET-10-512bd4)
-
-<img src="docs/images/player.png" alt="AztroMidi player" width="820" />
-
-</div>
-
-## Why AztroMidi?
-
-- **Tiny and fast.** A ~400 KB app with zero dependencies and sub-millisecond note timing.
-- **Sounds human.** Loose timing, rolled chords, tempo drift and phrase breathing, not robotic playback.
-- **Stays out of your way.** A mini player floats in the corner of Roblox and never steals focus.
-
-## Download
-
-Grab the latest version from **[Releases](https://github.com/Azmide/AztroMidi/releases/latest)**:
-
-| File | For |
-|---|---|
-| `AztroMidi-x.y.z.exe` | Standalone app for Windows 10/11 x64. Download and run, no .NET installation needed (starting with the next release). |
-| `AztroMidi-x.y.z-framework-dependent.exe` | Smaller app; needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0). |
-| `AztroMidi-x.y.z-win-x64-standalone.zip` | Bigger, but runs on any Windows 10/11 x64 PC without installing anything. |
-
-**First run:** Windows may show *"Windows protected your PC"* because AztroMidi is new and not
-code-signed yet. Click **More info**, then **Run anyway**. Every release includes `SHA256SUMS.txt`
-so you can check that your download is the original file.
+<p align="center">
+  <img src="docs/images/player.png" width="900" alt="AztroMidi's Player with the song library, playback controls, and piano visualizer">
+</p>
 
 ## Quick start
 
-1. Open AztroMidi and pick your MIDI folder with the folder icon in **Library**,
-   or just drag `.mid` files onto the window. They are moved into your library folder.
-2. Join a Roblox game with a piano and sit at it.
-3. Pick a song and press **Play**. AztroMidi switches to Roblox and starts after a short countdown.
-4. Press **F7** for the mini player in the corner of the game.
+1. Get the standalone Windows x64 executable from [Releases](https://github.com/Ayzmi/AztroMidi/releases), or [build it from source](#build-from-source).
+2. Choose a MIDI folder in **Library** or drop a file onto the window. Dropped files move into the library by default. **Settings → Library → Dropped files** also lets you copy them or only add them to the list.
+3. Select a song. Choose **Preview on this PC** to listen through your speakers, or choose **Roblox**, open a compatible piano in the game, and press **Play**.
+4. Press **F7** to open the mini player.
 
-> Roblox pianos use Shift for black keys. If Shift Lock is on in the game, turn it off
-> or some notes may not play.
+Keyboard playback waits when Roblox loses focus and resumes when you switch back. Press **F1** to return to Roblox while playback is waiting. If black keys are missed in game, check that Shift Lock is off.
 
-## Features
+## Playback and library
 
-### Playback
-- Standard Roblox virtual piano layout (61 keys, C2–C7) and an **88-key mode** with the Ctrl extension
-- Follows every tempo change in the MIDI file
-- Speed from 0.25× to 2×, seek bar, previous / next, loop and auto-play next
-- **Auto transpose** picks the key that fits the most notes
-- Out-of-range notes are folded by octave or skipped
-- Optional **sustain pedal** (Space) and **velocity keys** (Alt + key, 32 levels)
-- Tracks with enable / disable and **Solo**; drum tracks are skipped automatically
-- **Preview** mode plays the song through your PC speakers before you play it in-game
+- Play on the standard **61-key layout** or the **88-key layout** on pianos that support the Ctrl extension.
+- Follow MIDI tempo changes, adjust speed from 0.25× to 2×, and transpose notes to fit the keyboard.
+- Solo or mute tracks, follow the sustain pedal, and use velocity keys on supported pianos.
+- Search your library, keep favorites, and loop a song or continue to the next one.
+- See which keys are playing and which notes are coming up. Selecting another song during playback keeps the current song going until you double-click or press **Enter**.
 
-### Humanize
+AztroMidi looks for a `songs` folder beside the executable by default and saves portable preferences in `settings.json`.
 
-<img src="docs/images/humanize.png" alt="Humanize settings" width="640" />
+## Humanize
 
-| Setting | What it does |
-|---|---|
-| Timing looseness | Each note lands slightly before or after the beat (bell-shaped, not uniform noise) |
-| Chord roll | Chords are rolled like fingers, mostly upward, with a different spread each time |
-| Tempo drift | Slow, smooth speeding up and slowing down across the song |
-| Key hold variation | Keys are held a little longer or shorter each time |
-| Phrase breathing | Tiny pauses after rests, like lifting your hands |
-| Velocity variation | Random loudness changes (with velocity keys on) |
-| Wrong-note slips | Optional: now and then a neighbouring key is brushed right before the real note |
+Start with a preset or adjust timing, chord roll, tempo drift, note length, velocity, and pauses between phrases. Choose **Off** when you want the original timing.
 
-Presets: **Off, Subtle, Natural, Expressive, Sloppy**.
+<img src="docs/images/humanize.png" width="720" alt="Humanize presets and sliders for timing, chords, tempo, and note length">
 
-### Mini player
+## Mini player
 
-<img src="docs/images/mini-player.png" alt="Mini player" width="300" />
+The mini player shows progress, speed, and the next keys without taking focus away from the game. Snap it to the top-right of the Roblox window or drag it where you want it.
 
-- Sticks to the **top-right corner of the Roblox window** and follows it
-- Clicking it never takes focus away from the game
-- Shows progress, speed and the **next keys** in virtual piano sheet style (`t [tuo] y`)
-- Drag it anywhere to unstick it; adjustable opacity
+<img src="docs/images/mini-player.png" width="300" alt="AztroMidi mini player with transport controls and upcoming keys">
 
-### Library
-- Search, subfolders, **favorites** and song lengths
-- **Drag & drop** downloaded `.mid` files (or whole folders) onto the window and they are moved
-  into your library folder. Prefer copying? Change it in **Settings → Dropped MIDI files**
-- Open `.mid` files straight from Explorer with *Open with → AztroMidi*
-- Right-click a song to play it, favorite it, show it in its folder or remove it from the list
-- Clicking a song while another one plays only selects it; double-click or Enter switches songs
-
-### Quality of life
-- Live piano visualizer with keyboard labels
-- Reopens the last song, page, window size and position on start
-- Global hotkeys that work inside Roblox
-- Only plays while Roblox is focused, so keys never end up in Discord or your browser.
-  Switch away and playback waits; press **F1** to jump back and continue
-- Portable: settings are saved next to the exe in `settings.json`
-
-## Hotkeys
+## Default hotkeys
 
 | Key | Action |
-|---|---|
-| F1 | Play / Pause (jumps back to Roblox if playback is waiting) |
+| --- | --- |
+| F1 | Play or pause. Return to Roblox if playback is waiting for focus. |
 | F2 | Stop |
-| F3 / F4 | Slow down / Speed up |
+| F3 / F4 | Slow down or speed up |
 | F5 | Next song |
-| F6 | Toggle humanize |
-| F7 | Mini player |
+| F6 | Toggle Humanize |
+| F7 | Toggle the mini player |
 
-All hotkeys can be changed in **Settings**.
+Change global hotkeys in **Settings**. Inside AztroMidi, **Ctrl+O** opens MIDI files, **Ctrl+F** searches the library, and **Space** plays or pauses.
 
-Inside the AztroMidi window:
+## Build from source
 
-| Key | Action |
-|---|---|
-| Space | Play / Pause |
-| ← / → | Seek 5 seconds |
-| + / − | Speed up / Slow down |
-| Enter | Play the selected song |
-| Delete | Remove the selected song from the list |
-| Ctrl+F | Search songs |
-| Ctrl+O | Open MIDI files |
-| Ctrl+1 / 2 / 3 | Player / Humanize / Settings |
-| Ctrl+M | Mini player |
-
-## FAQ
-
-**Can it keep playing while I use another app?**
-No. Roblox only accepts keyboard input while its window is active, and getting around that
-would mean injecting into the game, which can get your account banned. AztroMidi waits
-while you are away and continues when you come back (press F1 to jump back).
-
-**Is this safe to use?**
-AztroMidi only sends normal key presses, the same as typing on your keyboard. It does not
-touch Roblox's memory or files.
-
-**Where do I get MIDI files?**
-Any `.mid` file works. Piano arrangements with one or two tracks sound best.
-
-## Building from source
-
-Requires Windows and the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+You’ll need Windows 10 or 11 x64, [Rust stable with the MSVC toolchain](https://rustup.rs/), and Visual Studio Build Tools with the **Desktop development with C++** workload.
 
 ```powershell
-dotnet run --project src/AztroMidi            # run the app
-dotnet run --project tests/AztroMidi.Tests    # run the tests
-.\build.ps1                                   # standalone dist\AztroMidi.exe
-.\build.ps1 -FrameworkDependent               # smaller build, requires .NET
+cargo run --locked
+cargo test --locked
+.\build.ps1
 ```
 
-## Contributing
+The build script writes the standalone executable to `dist\latest\AztroMidi.exe`.
 
-Ideas, bug reports and pull requests are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** to get started
-and **[CHANGELOG.md](CHANGELOG.md)** for what changed in each version.
-
-## Credits
-
-Inspired by [MIDI++](https://github.com/Zephkek/MIDIPlusPlus). AztroMidi is an independent
-implementation written from scratch.
-
-## License
-
-[MIT](LICENSE) © Azmide
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development notes and [CHANGELOG.md](CHANGELOG.md) for project updates. AztroMidi is [MIT-licensed](LICENSE) and inspired by [MIDI++](https://github.com/Zephkek/MIDIPlusPlus).

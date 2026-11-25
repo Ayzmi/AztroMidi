@@ -12,18 +12,20 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    env:
-      DOTNET_NOLOGO: 1
-      DOTNET_CLI_TELEMETRY_OPTOUT: 1
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+
+      - name: Format
+        run: cargo +stable fmt --all --check
+
+      - name: Lint
+        run: cargo +stable clippy --locked --release --target x86_64-pc-windows-msvc --all-targets -- -D warnings
 
       - name: Build
-        run: dotnet build AztroMidi.sln -c Release
+        run: cargo +stable build --locked --release --target x86_64-pc-windows-msvc
 
       - name: Test
-        run: dotnet run --project tests/AztroMidi.Tests -c Release --no-build
+        run: cargo +stable test --locked --release --target x86_64-pc-windows-msvc

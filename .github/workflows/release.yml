@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag like v1.3.0 and this builds the app and publishes a GitHub Release.
+# Push a version tag to build the Windows executable and publish its artifacts.
 on:
   push:
     tags: ["v*"]
@@ -11,60 +11,54 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
-    env:
-      DOTNET_NOLOGO: 1
-      DOTNET_CLI_TELEMETRY_OPTOUT: 1
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
 
       - name: Read version from tag
         id: version
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}".TrimStart("v")
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          if ($version -notmatch '^\d+\.\d+\.\d+([+-][A-Za-z0-9.-]+)?$') {
+            throw "Invalid release tag: $env:GITHUB_REF_NAME"
+          }
+          $metadata = cargo +stable metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $manifestVersion = ($metadata.packages | Where-Object name -eq 'aztromidi').version
+          if ($manifestVersion -ne $version) { throw "Tag must match the Cargo.toml version." }
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Test
-        run: dotnet run --project tests/AztroMidi.Tests -c Release
+        run: cargo +stable test --locked --release --target x86_64-pc-windows-msvc
 
-      - name: Publish (small, needs .NET 10 Desktop Runtime)
-        run: >
-          dotnet publish src/AztroMidi/AztroMidi.csproj -c Release -r win-x64 -o out/small
-          --self-contained false -p:PublishSingleFile=true
-          -p:Version=${{ steps.version.outputs.version }}
-
-      - name: Publish (standalone, runs on any Windows x64)
-        run: >
-          dotnet publish src/AztroMidi/AztroMidi.csproj -c Release -r win-x64 -o out/standalone
-          --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:Version=${{ steps.version.outputs.version }}
+      - name: Build standalone executable
+        run: .\build.ps1 -OutputDirectory out\standalone
 
       - name: Package
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $v = "${{ steps.version.outputs.version }}"
+          $v = $env:RELEASE_VERSION
           New-Item -ItemType Directory -Force release | Out-Null
-          foreach ($kind in "small", "standalone") {
-            New-Item -ItemType Directory -Force "out/$kind/songs" | Out-Null
-            Copy-Item README.md, LICENSE "out/$kind/"
-          }
-          Compress-Archive -Path out/small/* -DestinationPath "release/AztroMidi-$v-win-x64.zip"
-          Compress-Archive -Path out/standalone/* -DestinationPath "release/AztroMidi-$v-win-x64-standalone.zip"
+          Copy-Item README.md, LICENSE out/standalone/
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $folder = (Resolve-Path out/standalone).Path
+          $zip = Join-Path (Resolve-Path release).Path "AztroMidi-$v-win-x64-standalone.zip"
+          [IO.Compression.ZipFile]::CreateFromDirectory($folder, $zip)
           Copy-Item out/standalone/AztroMidi.exe "release/AztroMidi-$v.exe"
-          Copy-Item out/small/AztroMidi.exe "release/AztroMidi-$v-framework-dependent.exe"
           Get-ChildItem release | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
           } | Set-Content release/SHA256SUMS.txt -Encoding ascii
 
       - name: Release notes from CHANGELOG.md
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $v = "${{ steps.version.outputs.version }}"
+          $v = $env:RELEASE_VERSION
           $lines = Get-Content CHANGELOG.md
           $start = ($lines | Select-String -Pattern "^## \[$([regex]::Escape($v))\]").LineNumber
           if ($start) {
@@ -75,12 +69,11 @@ jobs:
             $notes = @("See CHANGELOG.md for details.")
           }
           $notes += ""
-          $notes += "### Which download?"
-          $notes += "- **AztroMidi-$v.exe**: standalone app. Download and run, no .NET installation needed."
-          $notes += "- **AztroMidi-$v-framework-dependent.exe**: smaller download; requires the .NET 10 Desktop Runtime."
-          $notes += "- **AztroMidi-$v-win-x64-standalone.zip**: bigger, but runs on any Windows 10/11 x64 PC without installing anything."
+          $notes += "### Downloads"
+          $notes += "- **AztroMidi-$v.exe**: standalone app for Windows 10/11 x64."
+          $notes += "- **AztroMidi-$v-win-x64-standalone.zip**: the same app with a starter songs folder."
           $notes += ""
-          $notes += "Windows may show *Windows protected your PC* the first time because the app is new and not code-signed yet. Click **More info** and then **Run anyway**. You can compare the file with ``SHA256SUMS.txt`` to make sure it is the original."
+          $notes += "You can verify each download with SHA256SUMS.txt."
           $notes | Set-Content release-notes.md -Encoding utf8
 
       - uses: softprops/action-gh-release@v2

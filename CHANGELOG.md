@@ -17,13 +17,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Releases include `SHA256SUMS.txt`, and the release notes explain the Windows SmartScreen prompt.
 
 ### Changed
-- Local builds and the main release exe now bundle the .NET runtime, so Windows x64 users can run without installing .NET.
-- Keep the smaller runtime-dependent exe as a separate download; local builds support `-FrameworkDependent` and `-OutputDirectory`.
+- Local builds now go to `dist/latest` by default and accept absolute output paths.
+- Port the desktop app and MIDI engine to Rust. The Windows x64 executable runs without a separate runtime.
+- Keep the existing portable settings, favorites and song library. Keyboard playback waits for the Roblox window to gain focus.
+- Improve contrast across the desktop UI and mini player, with clearer transport controls and aligned settings.
 - New desktop look: sidebar navigation, slimmer title bar with standard window buttons,
   Windows' own font, flatter panels and smaller corners.
 - Buttons and icons have accessible names for screen readers.
 
 ### Fixed
+- Keep the next note due when Roblox loses focus during playback and restore the sustain pedal on resume or seek.
+- Report Windows output errors with a retryable playback state.
+- Refresh song lengths after file changes, flag unreadable MIDI files, and let the import queue recover after interruptions.
+- Keep drum-only tracks visibly skipped without losing track choices when the setting changes.
+- Let the mini player take over the topmost position while it is open.
+- Retry settings saves after temporary write failures and replace builds only after the new executable is copied.
+- Opening an unreadable song no longer starts the previously loaded song by mistake.
+- Validate saved playback and humanize values before creating controls or scheduling notes.
 - Recover null settings sections and library strings while keeping other saved preferences.
 - Write settings to a temporary file before replacement to avoid truncating the previous file during a failed write.
 - Use unique write-access probes instead of overwriting an existing `.write_test` file.

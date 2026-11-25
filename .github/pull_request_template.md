@@ -4,7 +4,8 @@
 
 ## How was it tested?
 
-- [ ] `dotnet run --project tests/AztroMidi.Tests` passes
+- [ ] `cargo test --locked` passes
+- [ ] Formatting and Clippy checks pass
 - [ ] Tried it in the app (Preview mode or in Roblox)
 
 ## Screenshots
