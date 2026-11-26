@@ -8,6 +8,8 @@
 *.toml text eol=lf
 Cargo.lock text eol=lf
 
+build.ps1 -linguist-detectable
+
 *.png binary
 *.ico binary
 *.mid binary

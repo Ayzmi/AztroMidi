@@ -3,7 +3,7 @@ use crate::appearance::*;
 use crate::settings::{DropAction, Humanize, Layout, OutOfRange, Sustain};
 use egui::{
     Align, Align2, Color32, FontData, FontFamily, FontId, Frame, Margin, Rect, RichText, Stroke,
-    StrokeKind, Ui,
+    StrokeKind, Ui, Vec2,
 };
 
 pub(super) fn setup(ctx: &egui::Context) {
@@ -93,11 +93,15 @@ fn card(ui: &mut Ui, contents: impl FnOnce(&mut Ui)) {
 }
 
 fn primary(ui: &mut Ui, title: &str) -> egui::Response {
+    let fill = if ui.is_enabled() { BRAND } else { CONTROL };
     ui.add(
-        egui::Button::new(RichText::new(title).color(BASE).strong())
-            .fill(BRAND)
-            .stroke(Stroke::new(1.0_f32, ACCENT))
-            .min_size(egui::vec2(68.0, 32.0)),
+        egui::Button::new(
+            RichText::new(title)
+                .color(if ui.is_enabled() { BASE } else { MUTED })
+                .strong(),
+        )
+        .fill(fill)
+        .min_size(egui::vec2(84.0, 34.0)),
     )
 }
 
@@ -184,7 +188,10 @@ fn settings_card(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) {
 
 impl Desktop {
     pub(super) fn render(&mut self, ctx: &egui::Context, snapshot: Snapshot) {
-        let previous = self.settings.clone();
+        let previous_output = output_settings(&self.settings);
+        let previous_schedule = schedule_settings(&self.settings);
+        let previous_hotkeys = self.settings.hotkeys.clone();
+        let previous_top = self.settings.always_on_top;
         egui::TopBottomPanel::bottom("status")
             .frame(panel(NAVIGATION, 8))
             .show(ctx, |ui| {
@@ -218,7 +225,7 @@ impl Desktop {
             .frame(panel(NAVIGATION, 12))
             .show(ctx, |ui| {
                 ui.label(RichText::new(APP).size(22.0).strong());
-                ui.separator();
+                ui.add_space(7.0);
                 for page in [Page::Player, Page::Humanize, Page::Settings] {
                     let selected = self.page == page;
                     let button =
@@ -227,7 +234,9 @@ impl Desktop {
                         } else {
                             TEXT
                         }))
-                        .selected(selected);
+                        .selected(selected)
+                        .corner_radius(5)
+                        .stroke(Stroke::NONE);
                     if ui.add_sized([ui.available_width(), 36.0], button).clicked() {
                         self.show_page(page);
                     }
@@ -260,6 +269,7 @@ impl Desktop {
             .frame(panel(BASE, 18))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
+                    .id_salt(self.page.title())
                     .auto_shrink([false, false])
                     .show(ui, |ui| match self.page {
                         Page::Player => self.player(ui, snapshot),
@@ -267,25 +277,16 @@ impl Desktop {
                         Page::Settings => self.preferences(ui),
                     });
             });
-        if self.settings.output != previous.output
-            || self.settings.speed != previous.speed
-            || self.settings.velocity_keys != previous.velocity_keys
-        {
+        if output_settings(&self.settings) != previous_output {
             self.configure();
         }
-        if self.settings.hotkeys != previous.hotkeys {
+        if self.settings.hotkeys != previous_hotkeys {
             self.register_hotkeys();
         }
-        if self.settings.always_on_top != previous.always_on_top {
+        if self.settings.always_on_top != previous_top {
             self.update_window_level();
         }
-        if self.settings.layout != previous.layout
-            || self.settings.humanize != previous.humanize
-            || self.settings.out_of_range != previous.out_of_range
-            || self.settings.sustain != previous.sustain
-            || self.settings.skip_drums != previous.skip_drums
-            || self.settings.min_hold_ms != previous.min_hold_ms
-        {
+        if schedule_settings(&self.settings) != previous_schedule {
             self.defer_rebuild();
         }
         if ctx.output(|o| o.cursor_icon) == egui::CursorIcon::PointingHand {
@@ -294,9 +295,10 @@ impl Desktop {
     }
 
     fn library_panel(&mut self, ctx: &egui::Context) {
+        let max_width = (ctx.screen_rect().width() - 620.0).clamp(228.0, 318.0);
         egui::SidePanel::left("library")
             .default_width(268.0)
-            .width_range(250.0..=350.0)
+            .width_range(228.0..=max_width)
             .frame(panel(LIBRARY, 12))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -341,14 +343,11 @@ impl Desktop {
                     });
                 });
 
-                let visible = self.visible();
-                ui.label(
-                    RichText::new(format!("{} songs", visible.len()))
-                        .small()
-                        .color(MUTED),
-                );
+                self.refresh_visible_songs();
+                let count = self.visible_songs.len();
+                ui.label(RichText::new(format!("{count} songs")).small().color(MUTED));
                 ui.separator();
-                if visible.is_empty() {
+                if count == 0 {
                     ui.label(
                         RichText::new(if self.library.songs.is_empty() {
                             "Drop MIDI files or a folder here."
@@ -359,9 +358,9 @@ impl Desktop {
                     );
                 }
                 let mut action = None;
-                egui::ScrollArea::vertical().show_rows(ui, 51.0, visible.len(), |ui, rows| {
+                egui::ScrollArea::vertical().show_rows(ui, 51.0, count, |ui, rows| {
                     for index in rows {
-                        let song = &self.library.songs[visible[index]];
+                        let song = &self.library.songs[self.visible_songs[index]];
                         let selected = self
                             .selected
                             .as_deref()
@@ -375,11 +374,23 @@ impl Desktop {
                             } else {
                                 TEXT
                             });
+                            let size = egui::vec2(available, 29.0);
                             let response = ui
-                                .add_sized(
-                                    [available, 29.0],
-                                    egui::Button::new(title).selected(selected).truncate(),
+                                .allocate_ui_with_layout(
+                                    size,
+                                    egui::Layout::top_down(Align::Min),
+                                    |ui| {
+                                        ui.add(
+                                            egui::Button::new(title)
+                                                .min_size(size)
+                                                .selected(selected)
+                                                .corner_radius(5)
+                                                .stroke(Stroke::NONE)
+                                                .truncate(),
+                                        )
+                                    },
                                 )
+                                .inner
                                 .on_hover_text(song.path.display().to_string());
                             if response.double_clicked() {
                                 action = Some((ListAction::Play, song.path.clone()));
@@ -461,6 +472,7 @@ impl Desktop {
 
     fn player(&mut self, ui: &mut Ui, snapshot: Snapshot) {
         card(ui, |ui| {
+            let compact = ui.available_width() < 450.0;
             if let Some(song) = &self.song {
                 ui.add(egui::Label::new(RichText::new(&song.title).size(22.0).strong()).truncate())
                     .on_hover_text(&song.title);
@@ -480,6 +492,9 @@ impl Desktop {
                 );
             } else {
                 ui.label(RichText::new("No song loaded").size(21.0).strong());
+                if ui.button("Open MIDI…").on_hover_text("Ctrl+O").clicked() {
+                    self.choose_files();
+                }
             }
             if snapshot.state == State::Countdown {
                 ui.label(
@@ -491,7 +506,7 @@ impl Desktop {
             let mut position = self.seek_preview.unwrap_or(snapshot.position);
             let scrub = ui
                 .scope(|ui| {
-                    ui.spacing_mut().slider_width = ui.available_width() - 4.0;
+                    ui.spacing_mut().slider_width = (ui.available_width() - 4.0).max(1.0);
                     ui.spacing_mut().interact_size.y = 20.0;
                     ui.visuals_mut().selection.bg_fill = BRAND;
                     ui.add_enabled(
@@ -510,21 +525,34 @@ impl Desktop {
                 self.engine.send(Command::Seek(position));
                 self.seek_preview = None;
             }
-            ui.label(
-                RichText::new(format!(
-                    "{} / {}",
-                    format_time(position),
-                    format_time(duration)
-                ))
-                .color(MUTED),
-            );
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format_time(position)).small().monospace());
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format_time(duration))
+                            .small()
+                            .monospace()
+                            .color(MUTED),
+                    );
+                });
+            });
 
             ui.separator();
             ui.horizontal_wrapped(|ui| {
-                if primary(ui, if snapshot.playing() { "Pause" } else { "Play" }).clicked() {
+                let has_events = !self.events.is_empty();
+                if ui
+                    .add_enabled_ui(has_events || snapshot.playing(), |ui| {
+                        primary(ui, if snapshot.playing() { "Pause" } else { "Play" })
+                    })
+                    .inner
+                    .clicked()
+                {
                     self.toggle_play(false);
                 }
-                if ui.button("Stop").clicked() {
+                if ui
+                    .add_enabled(snapshot.state != State::Stopped, egui::Button::new("Stop"))
+                    .clicked()
+                {
                     self.engine.send(Command::Stop);
                 }
                 if ui.button("Previous").clicked() {
@@ -533,59 +561,38 @@ impl Desktop {
                 if ui.button("Next").clicked() {
                     self.step(1, snapshot.playing());
                 }
-                ui.checkbox(&mut self.settings.repeat, "Loop");
-                ui.checkbox(&mut self.settings.auto_next, "Auto next");
             });
-            ui.horizontal_wrapped(|ui| {
+            if compact {
+                self.speed_control(ui);
+                self.transpose_control(ui);
+            } else {
                 ui.horizontal(|ui| {
-                    let label = ui.label(RichText::new("Speed").color(MUTED));
-                    ui.spacing_mut().slider_width = 84.0;
-                    add_slider(
-                        ui,
-                        egui::Slider::new(&mut self.settings.speed, 0.25..=2.0)
-                            .step_by(0.05)
-                            .fixed_decimals(2)
-                            .suffix("x"),
-                    )
-                    .labelled_by(label.id);
+                    self.speed_control(ui);
+                    self.transpose_control(ui);
                 });
-                if let Some(song) = &mut self.song {
-                    let transpose = ui
-                        .horizontal(|ui| {
-                            ui.label(RichText::new("Transpose").color(MUTED));
-                            let down = ui.button("−").on_hover_text("Transpose down").clicked();
-                            ui.monospace(format!("{:+}", song.transpose));
-                            let up = ui.button("+").on_hover_text("Transpose up").clicked();
-                            let auto = ui.small_button("Auto").clicked();
-                            if auto {
-                                auto_transpose(song, &self.settings)
-                            } else {
-                                (song.transpose + i32::from(up) - i32::from(down)).clamp(-48, 48)
-                            }
-                        })
-                        .inner;
-                    if transpose != song.transpose {
-                        song.transpose = transpose;
-                        self.rebuild(true);
-                    }
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
+            }
+            ui.horizontal(|ui| {
                 quick_choice(ui, "Output", &mut self.settings.output, &OUTPUTS, 135.0);
                 quick_choice(
                     ui,
                     "Layout",
                     &mut self.settings.layout,
                     &[(Layout::Keys61, "61 keys"), (Layout::Keys88, "88 keys")],
-                    82.0,
+                    74.0,
                 );
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.checkbox(&mut self.settings.repeat, "Loop");
+                ui.checkbox(&mut self.settings.auto_next, "Auto next");
                 ui.checkbox(&mut self.settings.humanize.enabled, "Humanize");
             });
         });
         card(ui, |ui| {
             let upcoming = playback::upcoming(&self.events, snapshot.index, 8);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Next keys").color(MUTED));
+                ui.label(RichText::new("Piano").strong());
+                ui.separator();
+                ui.label(RichText::new("Next keys").small().color(MUTED));
                 ui.add(
                     egui::Label::new(
                         RichText::new(if upcoming.is_empty() {
@@ -648,6 +655,42 @@ impl Desktop {
             if changed {
                 self.rebuild(true);
             }
+        }
+    }
+
+    fn speed_control(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            let label = ui.label(RichText::new("Speed").color(MUTED));
+            ui.spacing_mut().slider_width = 84.0;
+            add_slider(
+                ui,
+                egui::Slider::new(&mut self.settings.speed, 0.25..=2.0)
+                    .step_by(0.05)
+                    .fixed_decimals(2)
+                    .suffix("x"),
+            )
+            .labelled_by(label.id);
+        });
+    }
+
+    fn transpose_control(&mut self, ui: &mut Ui) {
+        let Some(song) = &mut self.song else { return };
+        let transpose = ui
+            .horizontal(|ui| {
+                ui.label(RichText::new("Transpose").color(MUTED));
+                let down = ui.button("−").on_hover_text("Transpose down").clicked();
+                ui.monospace(format!("{:+}", song.transpose));
+                let up = ui.button("+").on_hover_text("Transpose up").clicked();
+                if ui.small_button("Auto").clicked() {
+                    auto_transpose(song, &self.settings)
+                } else {
+                    (song.transpose + i32::from(up) - i32::from(down)).clamp(-48, 48)
+                }
+            })
+            .inner;
+        if transpose != song.transpose {
+            song.transpose = transpose;
+            self.rebuild(true);
         }
     }
 
@@ -893,11 +936,29 @@ fn slider(ui: &mut Ui, value: &mut f64, min: f64, max: f64, step: f64, unit: &st
     });
 }
 
+fn output_settings(settings: &Settings) -> (Output, f64, bool) {
+    (settings.output, settings.speed, settings.velocity_keys)
+}
+
+fn schedule_settings(settings: &Settings) -> (Layout, Humanize, OutOfRange, Sustain, bool, f64) {
+    (
+        settings.layout,
+        settings.humanize.clone(),
+        settings.out_of_range,
+        settings.sustain,
+        settings.skip_drums,
+        settings.min_hold_ms,
+    )
+}
+
 fn piano(ui: &mut Ui, layout: Layout, held: &[bool; 128]) {
     let (first, last) = keys::range(layout);
     let whites = (first..=last).filter(|&n| !keys::is_black(n)).count();
     let (outer, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 88.0), egui::Sense::hover());
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 92.0), egui::Sense::hover());
+    if !ui.is_rect_visible(outer) {
+        return;
+    }
     let painter = ui.painter_at(outer);
     let width = outer.width() / whites as f32;
     let mut column = 0;

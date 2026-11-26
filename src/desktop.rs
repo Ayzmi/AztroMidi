@@ -14,12 +14,15 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::HWND;
 
 mod ui;
 
 const APP: &str = "AztroMidi";
+const SAVE_DELAY: Duration = Duration::from_millis(350);
+const MINI_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Page {
@@ -147,6 +150,8 @@ struct Desktop {
     library: Library,
     filter: String,
     favorites_only: bool,
+    visible_filter: Option<(String, bool)>,
+    visible_songs: Vec<usize>,
     selected: Option<PathBuf>,
     song: Option<SongState>,
     events: Arc<[Event]>,
@@ -156,8 +161,10 @@ struct Desktop {
     hotkey_errors: Vec<String>,
     hint: String,
     mini: Option<mini::Mini>,
+    mini_update_at: Instant,
     seek_preview: Option<f64>,
     save_at: Option<Instant>,
+    save_worker: Option<JoinHandle<(Settings, std::io::Result<()>)>>,
     save_error: Option<String>,
     rebuild_at: Option<Instant>,
 }
@@ -188,6 +195,8 @@ impl Desktop {
             library,
             filter: String::new(),
             favorites_only: false,
+            visible_filter: None,
+            visible_songs: Vec::new(),
             selected: None,
             song: None,
             events: Arc::new([]),
@@ -197,8 +206,10 @@ impl Desktop {
             hotkey_errors: Vec::new(),
             hint: "Open a MIDI file or choose a library folder.".into(),
             mini: None,
+            mini_update_at: Instant::now(),
             seek_preview: None,
             save_at: None,
+            save_worker: None,
             save_error: None,
             rebuild_at: None,
         };
@@ -231,6 +242,7 @@ impl Desktop {
     }
 
     fn reload_library(&mut self) {
+        self.visible_filter = None;
         if let Err(error) = self.library.reload(&self.ctx) {
             self.hint = format!("Could not read the library: {error}");
         }
@@ -284,6 +296,7 @@ impl Desktop {
         if let Some(result) = self.library.imported() {
             if let Some(first) = result.paths.first().cloned() {
                 self.library.add(result.paths);
+                self.visible_filter = None;
                 self.library.scan_durations(&self.ctx);
                 self.favorites_only = false;
                 self.filter.clear();
@@ -473,33 +486,46 @@ impl Desktop {
             .is_some_and(|song| library::same(&song.path, path))
     }
 
-    fn visible(&self) -> Vec<usize> {
-        let query = self.filter.trim().to_lowercase();
-        self.library
-            .songs
-            .iter()
-            .enumerate()
-            .filter(|(_, song)| {
-                song.matches(&query)
-                    && (!self.favorites_only || library::favorite(&self.settings, &song.path))
+    fn refresh_visible_songs(&mut self) {
+        if self
+            .visible_filter
+            .as_ref()
+            .is_some_and(|(filter, favorites)| {
+                filter == &self.filter && *favorites == self.favorites_only
             })
-            .map(|(index, _)| index)
-            .collect()
+        {
+            return;
+        }
+        self.visible_filter = Some((self.filter.clone(), self.favorites_only));
+        let query = self.filter.trim().to_lowercase();
+        self.visible_songs.clear();
+        self.visible_songs.extend(
+            self.library
+                .songs
+                .iter()
+                .enumerate()
+                .filter(|(_, song)| {
+                    song.matches(&query)
+                        && (!self.favorites_only || library::favorite(&self.settings, &song.path))
+                })
+                .map(|(index, _)| index),
+        );
     }
 
     fn step(&mut self, direction: isize, auto_play: bool) {
-        let visible = self.visible();
-        if visible.is_empty() {
+        self.refresh_visible_songs();
+        if self.visible_songs.is_empty() {
             return;
         }
-        let index = visible
+        let index = self
+            .visible_songs
             .iter()
             .position(|index| self.is_current(&self.library.songs[*index].path));
         let start = index.map_or(if direction > 0 { -1 } else { 0 }, |index| index as isize);
-        let count = visible.len() as isize;
+        let count = self.visible_songs.len() as isize;
         for offset in 1..=count {
             let next = (start + direction * offset).rem_euclid(count) as usize;
-            let song = &self.library.songs[visible[next]];
+            let song = &self.library.songs[self.visible_songs[next]];
             if song.duration == library::SongDuration::Unreadable {
                 continue;
             }
@@ -512,6 +538,7 @@ impl Desktop {
     }
 
     fn favorite(&mut self, path: &Path) {
+        self.visible_filter = None;
         if library::favorite(&self.settings, path) {
             self.settings
                 .favorites
@@ -525,6 +552,7 @@ impl Desktop {
 
     fn remove(&mut self, path: &Path) {
         self.library.remove(path);
+        self.visible_filter = None;
         if self
             .selected
             .as_deref()
@@ -564,6 +592,7 @@ impl Desktop {
                 Ok(mini) => {
                     mini.show(&self.settings);
                     self.mini = Some(mini);
+                    self.mini_update_at = Instant::now();
                     self.update_window_level();
                 }
                 Err(error) => self.hint = format!("Could not open the mini player: {error}"),
@@ -650,7 +679,6 @@ impl Desktop {
             .into_iter()
             .find(|key| i.key_pressed(*key))
         });
-        let position = self.snapshot().position;
         match command {
             Some(Key::Space) => self.toggle_play(false),
             Some(Key::Enter) => self.play_selected(),
@@ -659,8 +687,12 @@ impl Desktop {
                     self.remove(&path);
                 }
             }
-            Some(Key::ArrowLeft) => self.engine.send(Command::Seek(position - 5.0)),
-            Some(Key::ArrowRight) => self.engine.send(Command::Seek(position + 5.0)),
+            Some(Key::ArrowLeft) => self
+                .engine
+                .send(Command::Seek(self.snapshot().position - 5.0)),
+            Some(Key::ArrowRight) => self
+                .engine
+                .send(Command::Seek(self.snapshot().position + 5.0)),
             Some(Key::Minus) => self.speed(-0.05),
             Some(Key::Plus | Key::Equals) => self.speed(0.05),
             _ => {}
@@ -668,6 +700,7 @@ impl Desktop {
     }
 
     fn save_later(&mut self, now: Instant) {
+        let previous = window_placement(&self.settings);
         self.ctx.input(|input| {
             let viewport = input.viewport();
             if let Some(maximized) = viewport.maximized {
@@ -687,31 +720,70 @@ impl Desktop {
                 }
             }
         });
-        if self.settings != self.saved {
-            let delay = Duration::from_millis(350);
-            let save_at = *self.save_at.get_or_insert(now + delay);
-            if now >= save_at {
-                match self.settings.save(&self.settings_path) {
-                    Ok(()) => {
-                        self.saved = self.settings.clone();
-                        self.save_at = None;
-                        self.save_error = None;
-                    }
-                    Err(error) => {
-                        self.save_error = Some(format!("Could not save settings: {error}"));
-                        let retry = Duration::from_secs(2);
-                        self.save_at = Some(now + retry);
+        if previous != window_placement(&self.settings) {
+            self.save_at = Some(now + SAVE_DELAY);
+        }
+
+        if self
+            .save_worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            self.ctx.request_repaint_after(Duration::from_millis(40));
+            return;
+        }
+        if let Some(worker) = self.save_worker.take() {
+            match worker.join() {
+                Ok((saved, Ok(()))) => {
+                    self.saved = saved;
+                    if self.save_error.take().is_some() {
                         self.ctx.request_repaint();
-                        self.ctx.request_repaint_after(retry);
                     }
                 }
-            } else {
-                self.ctx.request_repaint_after(save_at - now);
+                Ok((_, Err(error))) => self.save_failed(now, &error.to_string()),
+                Err(_) => self.save_failed(now, "The settings writer stopped."),
             }
-        } else {
-            self.save_at = None;
-            self.save_error = None;
         }
+
+        if self.settings == self.saved {
+            self.save_at = None;
+            if self.save_error.is_some() {
+                self.ctx.request_repaint();
+            }
+            self.save_error = None;
+            return;
+        }
+
+        let save_at = *self.save_at.get_or_insert(now + SAVE_DELAY);
+        if now < save_at {
+            self.ctx.request_repaint_after(save_at - now);
+            return;
+        }
+
+        self.save_at = None;
+        let settings = self.settings.clone();
+        let path = self.settings_path.clone();
+        // Flushing the file can stall the window's event loop.
+        match thread::Builder::new()
+            .name("AztroMidi Settings".into())
+            .spawn(move || {
+                let result = settings.save(&path);
+                (settings, result)
+            }) {
+            Ok(worker) => {
+                self.save_worker = Some(worker);
+                self.ctx.request_repaint_after(Duration::from_millis(40));
+            }
+            Err(error) => self.save_failed(now, &error.to_string()),
+        }
+    }
+
+    fn save_failed(&mut self, now: Instant, error: &str) {
+        self.save_error = Some(format!("Could not save settings: {error}"));
+        let retry = Duration::from_secs(2);
+        self.save_at = Some(now + retry);
+        self.ctx.request_repaint();
+        self.ctx.request_repaint_after(retry);
     }
 }
 
@@ -744,7 +816,9 @@ impl eframe::App for Desktop {
             }
         }
         self.render(ctx, snapshot);
-        if let Some(mini) = &self.mini {
+        if let Some(mini) = &self.mini
+            && now >= self.mini_update_at
+        {
             let playing = snapshot.playing();
             mini.update(
                 mini::View {
@@ -764,7 +838,13 @@ impl eframe::App for Desktop {
                 },
                 &self.settings,
             );
-            ctx.request_repaint_after(Duration::from_millis(100));
+            self.mini_update_at = now + MINI_INTERVAL;
+        }
+        if self.mini.is_some() {
+            ctx.request_repaint_after(
+                self.mini_update_at
+                    .saturating_duration_since(Instant::now()),
+            );
         }
         self.save_later(now);
     }
@@ -772,10 +852,27 @@ impl eframe::App for Desktop {
 
 impl Drop for Desktop {
     fn drop(&mut self) {
+        if let Some(worker) = self.save_worker.take()
+            && let Ok((saved, Ok(()))) = worker.join()
+        {
+            self.saved = saved;
+        }
         if self.settings != self.saved {
             let _ = self.settings.save(&self.settings_path);
         }
     }
+}
+
+fn window_placement(
+    settings: &Settings,
+) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>, bool) {
+    (
+        settings.window_left,
+        settings.window_top,
+        settings.window_width,
+        settings.window_height,
+        settings.window_maximized,
+    )
 }
 
 fn library_folder(settings: &Settings, fallback: &Path) -> PathBuf {

@@ -7,6 +7,7 @@ use std::io;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -136,15 +137,21 @@ impl Library {
         self.durations = Some(receive);
         let ctx = ctx.clone();
         std::thread::spawn(move || {
+            let mut last_repaint = Instant::now();
             for path in pending {
                 let length = Midi::load(&path).map_or(SongDuration::Unreadable, |midi| {
                     SongDuration::Known(midi.duration)
                 });
                 if send.send((path, length)).is_err() {
-                    break;
+                    return;
                 }
-                ctx.request_repaint();
+                if last_repaint.elapsed() >= Duration::from_millis(40) {
+                    ctx.request_repaint();
+                    last_repaint = Instant::now();
+                }
             }
+            drop(send);
+            ctx.request_repaint();
         });
     }
 
@@ -152,7 +159,19 @@ impl Library {
         let Some(durations) = &self.durations else {
             return;
         };
-        let completed: HashMap<_, _> = durations.try_iter().collect();
+        let mut completed = HashMap::new();
+        loop {
+            match durations.try_recv() {
+                Ok((path, length)) => {
+                    completed.insert(path, length);
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.durations = None;
+                    break;
+                }
+            }
+        }
         if !completed.is_empty() {
             for song in &mut self.songs {
                 if let Some(&length) = completed.get(&song.path) {

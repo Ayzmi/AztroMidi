@@ -5,6 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+- Refine the player layout, with a clearer timeline and transport, a wider piano area at small window sizes, and separate scroll positions for each page.
+- Reuse library search results between frames and limit how often the mini player refreshes.
+
+### Fixed
+- Save settings off the UI thread and wait for the window to settle before saving its placement.
+
 ## [1.4.0] - 2026-11-26
 
 ### Added
