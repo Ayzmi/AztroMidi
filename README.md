@@ -20,11 +20,28 @@
 ## Quick start
 
 1. Get the standalone Windows x64 executable from [Releases](https://github.com/Ayzmi/AztroMidi/releases), or [build it from source](#build-from-source).
-2. Choose a MIDI folder in **Library** or drop a file onto the window. Dropped files move into the library by default. **Settings → Library → Dropped files** also lets you copy them or only add them to the list.
+2. Choose a MIDI folder in **Library** or drop a file onto the window. Dropped files move into the library by default. **Settings → Library & window** also lets you copy them or only add them to the list.
 3. Select a song. Choose **Preview on this PC** to listen through your speakers, or choose **Roblox**, open a compatible piano in the game, and press **Play**.
 4. Press **F7** to open the mini player.
 
 Keyboard playback waits when Roblox loses focus and resumes when you switch back. Press **F1** to return to Roblox while playback is waiting. If black keys are missed in game, check that Shift Lock is off.
+
+## Voice Chat Piano
+
+Play a sampled acoustic grand piano through voice chat in experiences that support it.
+
+1. Install [VB-CABLE](https://vb-audio.com/Cable/) and choose **Voice Chat Piano** under **Output** in AztroMidi.
+2. In **Audio settings**, leave **Send audio to** on **Automatic (VB-CABLE)** or select **CABLE Input**. To preview this piano locally, select your headphones or speakers here.
+3. Select **CABLE Output** as the microphone in Roblox. Keep Roblox playback on your headphones or speakers.
+4. Choose your physical microphone in AztroMidi to talk or sing over the music during playback. Select **Off (piano only)** to send just the piano. **Mic live** shows when the mic is open, and **Mic signal** shows the incoming level in the Mixer.
+5. To hear the piano while sending it to Roblox, select your headphones or speakers under **Monitor piano on**. **Monitor level** controls your own listening volume.
+6. Unmute in Roblox and press **Play** in AztroMidi. Adjust **Piano level**, **Microphone level**, and **Room reverb** in **Audio settings**.
+
+This mode uses the full 88-key piano range, follows the MIDI sustain pedal, and supports the Humanize controls. When you pause or stop, the piano and room reverb trail off. Enable **Keep mic live** in the Mixer to keep speaking between songs and check the **Mic signal** meter before playing.
+
+On the **Player** page, leave **Play with keyboard** enabled to play live on the standard 61-key layout. With the window focused and MIDI playback paused or stopped, use the number row and letter keys. Hold **Shift** for black keys. Live notes use the voice destination and local monitor. With **Keep mic live** off, the mic stays active for up to three seconds between notes or until you switch away from the window.
+
+The acoustic piano uses [Salamander Grand Piano V3](https://github.com/sfzinstruments/SalamanderGrandPiano) recordings by Alexander Holm under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). AztroMidi uses selected notes and velocity layers, downmixes them to mono at 24 kHz, shortens and fades the tails, and adjusts their levels.
 
 ## Playback and library
 

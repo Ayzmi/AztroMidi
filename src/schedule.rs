@@ -2,7 +2,7 @@ use crate::{
     humanize::Humanizer,
     keys,
     midi::{Midi, Note},
-    settings::{OutOfRange, Settings, Sustain},
+    settings::{OutOfRange, Output, Settings, Sustain},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -33,8 +33,14 @@ pub fn build(
     settings: &Settings,
     human: &mut Humanizer,
 ) -> Vec<Event> {
-    let hold_min = settings.min_hold_ms / 1000.0;
-    let hold_max = (settings.max_hold_ms / 1000.0).max(hold_min);
+    let voice = settings.output == Output::Voice;
+    let (hold_min, hold_max) = if voice {
+        (0.005, f64::INFINITY)
+    } else {
+        let min = settings.min_hold_ms / 1000.0;
+        (min, (settings.max_hold_ms / 1000.0).max(min))
+    };
+    let layout = settings.playback_layout();
     let mut breathing = vec![(0.0, 0.0)];
     let mut notes = midi
         .notes
@@ -53,7 +59,7 @@ pub fn build(
         while let Some(note) = next {
             if let Some(pitch) = keys::fit(
                 i32::from(note.pitch) + transpose,
-                settings.layout,
+                layout,
                 settings.out_of_range,
             ) {
                 let bit = 1u128 << pitch;
@@ -80,11 +86,8 @@ pub fn build(
             let mut start =
                 (note.start + shift + jitter + human.timing_offset() * 0.35 + roll).max(0.0);
             if let Some(direction) = human.mistake()
-                && let Some(wrong) = keys::fit(
-                    i32::from(pitch) + direction,
-                    settings.layout,
-                    OutOfRange::Skip,
-                )
+                && let Some(wrong) =
+                    keys::fit(i32::from(pitch) + direction, layout, OutOfRange::Skip)
             {
                 let duration = human.mistake_length();
                 note_events(
@@ -108,7 +111,7 @@ pub fn build(
         }
     }
 
-    if settings.sustain == Sustain::FollowPedal {
+    if voice || settings.sustain == Sustain::FollowPedal {
         for pedal in &midi.pedal {
             if tracks.get(pedal.track) == Some(&true) {
                 let mark = breathing.partition_point(|&(time, _)| time <= pedal.time) - 1;
@@ -156,7 +159,7 @@ fn note_events(events: &mut Vec<Event>, start: f64, duration: f64, pitch: u8, ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::midi::fixture;
+    use crate::midi::{Pedal, fixture};
 
     #[test]
     fn disabled_humanize_keeps_chords_together_and_filters_drums() {
@@ -174,5 +177,49 @@ mod tests {
         assert_eq!(events[0].time, events[1].time);
         assert_eq!(events[2].time, 0.025);
         assert_eq!(events[0].id, events[2].id);
+    }
+
+    #[test]
+    fn voice_keeps_the_full_piano_range_and_midi_pedal() {
+        let midi = Midi {
+            notes: [21, 108]
+                .map(|pitch| Note {
+                    track: 0,
+                    channel: 0,
+                    pitch,
+                    velocity: 90,
+                    start: 0.0,
+                    end: 6.0,
+                })
+                .to_vec(),
+            pedal: vec![
+                Pedal {
+                    track: 0,
+                    time: 1.0,
+                    down: true,
+                },
+                Pedal {
+                    track: 0,
+                    time: 7.0,
+                    down: false,
+                },
+            ],
+            tracks: Vec::new(),
+            duration: 7.0,
+            bpm: 120.0,
+        };
+        let mut settings = Settings {
+            output: Output::Voice,
+            layout: crate::settings::Layout::Keys61,
+            ..Settings::default()
+        };
+        settings.humanize.enabled = false;
+        let mut human = Humanizer::new(settings.humanize.clone(), 7);
+        let events = build(&midi, &[true], 0, &settings, &mut human);
+        assert_eq!(events[0].pitch, 21);
+        assert_eq!(events[1].pitch, 108);
+        assert_eq!(events[2].action, Action::PedalDown);
+        assert_eq!(events[3].time, 6.0);
+        assert_eq!(events[5].action, Action::PedalUp);
     }
 }

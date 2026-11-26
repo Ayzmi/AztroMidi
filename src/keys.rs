@@ -60,6 +60,22 @@ pub fn lookup(pitch: u8) -> Option<Key> {
     })
 }
 
+#[cfg(windows)]
+pub fn keyboard_pitch(base: u8, shift: bool) -> Option<u8> {
+    let label = if shift && base.is_ascii_digit() {
+        SHIFTED_DIGITS[(base - b'0') as usize]
+    } else if shift {
+        base.to_ascii_uppercase()
+    } else {
+        base
+    };
+    STANDARD
+        .iter()
+        .position(|&key| key == label)
+        .or_else(|| STANDARD.iter().position(|&key| key == base))
+        .map(|index| 36 + index as u8)
+}
+
 pub fn range(layout: Layout) -> (i32, i32) {
     match layout {
         Layout::Keys61 => (36, 96),
@@ -136,5 +152,16 @@ mod tests {
         assert_eq!(fit(0, Layout::Keys61, OutOfRange::Fold), Some(36));
         assert_eq!(fit(0, Layout::Keys61, OutOfRange::Skip), None);
         assert_eq!(best_transpose([36, 38, 40].into_iter(), Layout::Keys61), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn maps_the_computer_keyboard_to_the_standard_piano_layout() {
+        assert_eq!(keyboard_pitch(b'1', false), Some(36));
+        assert_eq!(keyboard_pitch(b'1', true), Some(37));
+        assert_eq!(keyboard_pitch(b't', false), Some(60));
+        assert_eq!(keyboard_pitch(b't', true), Some(61));
+        assert_eq!(keyboard_pitch(b'm', true), Some(96));
+        assert_eq!(keyboard_pitch(b'?', false), None);
     }
 }

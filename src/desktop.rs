@@ -31,6 +31,23 @@ enum Page {
     Settings,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsTab {
+    Audio,
+    LibraryAndWindow,
+    Hotkeys,
+}
+
+impl SettingsTab {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Audio => "Audio",
+            Self::LibraryAndWindow => "Library & window",
+            Self::Hotkeys => "Hotkeys",
+        }
+    }
+}
+
 impl Page {
     fn parse(page: &str) -> Self {
         match page {
@@ -135,6 +152,17 @@ struct SongState {
     midi: Midi,
     enabled: Vec<bool>,
     transpose: i32,
+    voice_transpose: i32,
+}
+
+impl SongState {
+    fn transpose(&self, output: Output) -> i32 {
+        if output == Output::Voice {
+            self.voice_transpose
+        } else {
+            self.transpose
+        }
+    }
 }
 
 struct Desktop {
@@ -147,6 +175,7 @@ struct Desktop {
     settings_path: PathBuf,
     fallback_songs: PathBuf,
     page: Page,
+    settings_tab: SettingsTab,
     library: Library,
     filter: String,
     favorites_only: bool,
@@ -167,6 +196,9 @@ struct Desktop {
     save_worker: Option<JoinHandle<(Settings, std::io::Result<()>)>>,
     save_error: Option<String>,
     rebuild_at: Option<Instant>,
+    voice_devices: Option<Result<crate::voice::Devices, String>>,
+    live_input: bool,
+    live_keys: [Option<u8>; 128],
 }
 
 impl Desktop {
@@ -192,6 +224,7 @@ impl Desktop {
             settings_path,
             fallback_songs,
             page,
+            settings_tab: SettingsTab::Audio,
             library,
             filter: String::new(),
             favorites_only: false,
@@ -212,6 +245,9 @@ impl Desktop {
             save_worker: None,
             save_error: None,
             rebuild_at: None,
+            voice_devices: None,
+            live_input: false,
+            live_keys: [None; 128],
         };
         app.register_hotkeys();
         app.configure();
@@ -232,6 +268,7 @@ impl Desktop {
             output: self.settings.output,
             speed: self.settings.speed,
             velocity: self.settings.velocity_keys,
+            voice: self.settings.voice.clone(),
         });
     }
 
@@ -255,6 +292,7 @@ impl Desktop {
     }
 
     fn choose_folder(&mut self) {
+        self.end_live_input();
         let dialog = rfd::FileDialog::new().set_title("Choose MIDI library");
         let dialog = if self.library.root.is_dir() {
             dialog.set_directory(&self.library.root)
@@ -267,6 +305,7 @@ impl Desktop {
     }
 
     fn choose_files(&mut self) {
+        self.end_live_input();
         let dialog = rfd::FileDialog::new()
             .set_title("Open MIDI files")
             .add_filter("MIDI", &["mid", "midi", "rmi"]);
@@ -352,6 +391,7 @@ impl Desktop {
             midi,
             enabled,
             transpose: 0,
+            voice_transpose: 0,
         };
         if self.settings.auto_transpose {
             song.transpose = auto_transpose(&song, &self.settings);
@@ -365,15 +405,20 @@ impl Desktop {
         self.generation += 1;
         self.finished = 0;
         self.rebuild(false);
-        self.hint = if self.settings.output == Output::Preview {
-            "Loaded. Press Play to listen on this PC.".into()
-        } else {
-            "Loaded. Press Play when your Roblox piano is ready.".into()
-        };
+        self.set_loaded_hint();
         if start {
             self.engine.send(Command::Play(0.0));
         }
         true
+    }
+
+    fn set_loaded_hint(&mut self) {
+        self.hint = match self.settings.output {
+            Output::Keyboard => "Loaded. Press Play when your Roblox piano is ready.",
+            Output::Preview => "Loaded. Press Play to listen on this PC.",
+            Output::Voice => "Loaded. Press Play to send the piano to your audio device.",
+        }
+        .into();
     }
 
     fn rebuild(&mut self, preserve_position: bool) {
@@ -387,7 +432,7 @@ impl Desktop {
         self.events = schedule::build(
             &song.midi,
             &song.enabled,
-            song.transpose,
+            song.transpose(self.settings.output),
             &self.settings,
             &mut humanizer,
         )
@@ -569,6 +614,9 @@ impl Desktop {
     }
 
     fn show_page(&mut self, page: Page) {
+        if page != Page::Player {
+            self.end_live_input();
+        }
         self.page = page;
         self.settings.last_page = page.title().into();
     }
@@ -699,6 +747,66 @@ impl Desktop {
         }
     }
 
+    fn end_live_input(&mut self) {
+        if self.live_input {
+            self.engine.send(Command::EndLive);
+            self.live_keys.fill(None);
+            self.live_input = false;
+        }
+    }
+
+    fn play_live_keys(&mut self, snapshot: Snapshot) {
+        let ctx = &self.ctx;
+        if self.settings.output != Output::Voice
+            || self.page != Page::Player
+            || !self.settings.voice.live_keyboard
+            || snapshot.playing()
+            || !ctx.input(|input| input.focused)
+            || ctx.memory(|memory| {
+                memory.any_popup_open() || memory.has_focus(egui::Id::new("library-search"))
+            })
+            || ctx.output(|output| output.ime.is_some())
+        {
+            self.end_live_input();
+            return;
+        }
+        self.live_input = true;
+        for event in ctx.input(|input| input.events.clone()) {
+            let egui::Event::Key {
+                key,
+                physical_key,
+                pressed,
+                repeat,
+                modifiers,
+            } = event
+            else {
+                continue;
+            };
+            let [character] = physical_key.unwrap_or(key).name().as_bytes() else {
+                continue;
+            };
+            let base = character.to_ascii_lowercase();
+            if !base.is_ascii_alphanumeric() {
+                continue;
+            }
+            let held = &mut self.live_keys[base as usize];
+            if !pressed {
+                if let Some(pitch) = held.take() {
+                    self.engine.send(Command::LiveKey { pitch, down: false });
+                }
+            } else if !repeat
+                && held.is_none()
+                && !modifiers.ctrl
+                && !modifiers.alt
+                && !modifiers.command
+                && let Some(pitch) = keys::keyboard_pitch(base, modifiers.shift)
+            {
+                *held = Some(pitch);
+                self.engine.send(Command::LiveKey { pitch, down: true });
+            }
+        }
+    }
+
     fn save_later(&mut self, now: Instant) {
         let previous = window_placement(&self.settings);
         self.ctx.input(|input| {
@@ -816,6 +924,7 @@ impl eframe::App for Desktop {
             }
         }
         self.render(ctx, snapshot);
+        self.play_live_keys(snapshot);
         if let Some(mini) = &self.mini
             && now >= self.mini_update_at
         {
@@ -826,12 +935,16 @@ impl eframe::App for Desktop {
                         .song
                         .as_ref()
                         .map_or_else(|| "No song loaded".into(), |song| song.title.clone()),
-                    status: snapshot.status(),
+                    status: if snapshot.mic_live {
+                        "Playing · Mic live"
+                    } else {
+                        snapshot.status()
+                    },
                     output_problem: snapshot.waiting || snapshot.output_error.is_some(),
                     elapsed: format_time(snapshot.position),
                     duration: format_time(snapshot.length),
                     speed: format!("{:.2}x", self.settings.speed),
-                    next: playback::upcoming(&self.events, snapshot.index, 8),
+                    next: playback::upcoming(&self.events, snapshot.index, 8, self.settings.output),
                     progress: (snapshot.position / snapshot.length.max(0.1)).clamp(0.0, 1.0),
                     playing,
                     snapped: self.settings.mini_snap_to_roblox,

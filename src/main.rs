@@ -16,7 +16,11 @@ mod desktop;
 #[cfg(windows)]
 mod library;
 #[cfg(windows)]
+mod piano;
+#[cfg(windows)]
 mod playback;
+#[cfg(windows)]
+mod voice;
 #[cfg(windows)]
 mod win;
 

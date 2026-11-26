@@ -1,6 +1,7 @@
 use crate::{
     keys::{Key, Modifier},
-    settings::Output,
+    settings::{Output, Voice},
+    voice,
 };
 use eframe::egui;
 use std::cell::Cell;
@@ -470,6 +471,10 @@ pub enum OutputError {
     FocusLost,
     KeyboardUnavailable,
     PreviewUnavailable,
+    VoiceCableMissing,
+    VoiceUnavailable,
+    VoiceMicUnavailable,
+    VoiceSamplesUnavailable,
 }
 
 impl OutputError {
@@ -482,6 +487,18 @@ impl OutputError {
             Self::PreviewUnavailable => {
                 "Windows MIDI preview is unavailable. Press Play to try the audio device again."
             }
+            Self::VoiceCableMissing => {
+                "VB-CABLE was not found. Install it or select a playback device in Settings."
+            }
+            Self::VoiceUnavailable => {
+                "Voice Chat Piano couldn't open the playback device. Check Settings and press Play to retry."
+            }
+            Self::VoiceMicUnavailable => {
+                "The selected microphone is unavailable. Check Windows microphone access or choose Off (piano only)."
+            }
+            Self::VoiceSamplesUnavailable => {
+                "The bundled acoustic piano samples could not be read."
+            }
         }
     }
 }
@@ -493,6 +510,8 @@ pub struct Outputs {
     pedal: bool,
     pending: bool,
     midi: HMIDIOUT,
+    voice: Option<voice::Stream>,
+    voice_settings: Voice,
 }
 
 impl Outputs {
@@ -516,6 +535,8 @@ impl Outputs {
             pedal: false,
             pending: false,
             midi: null_mut(),
+            voice: None,
+            voice_settings: Voice::default(),
         }
     }
 
@@ -529,6 +550,74 @@ impl Outputs {
         }
     }
 
+    pub fn configure_voice(&mut self, settings: Voice) -> bool {
+        let route_changed = settings.destination != self.voice_settings.destination
+            || settings.microphone != self.voice_settings.microphone;
+        self.voice_settings = settings;
+        if route_changed {
+            self.voice = None;
+        }
+        route_changed
+    }
+
+    pub fn warm_voice(&mut self) -> Result<(), OutputError> {
+        if self.voice.is_none() {
+            self.voice = Some(voice::Stream::open(&self.voice_settings)?);
+        }
+        Ok(())
+    }
+
+    pub fn close_voice(&mut self) {
+        self.voice = None;
+    }
+
+    pub fn prepare_voice(&mut self) -> Result<bool, OutputError> {
+        self.warm_voice()?;
+        let result = self.voice.as_mut().unwrap().start(&self.voice_settings);
+        if result.is_err() {
+            self.close_voice();
+        }
+        result
+    }
+
+    pub fn finish_voice(&mut self) {
+        if let Some(stream) = &mut self.voice {
+            stream.finish(self.voice_settings.keep_mic_live);
+        }
+    }
+
+    pub fn mic_live(&self) -> bool {
+        self.voice.as_ref().is_some_and(voice::Stream::mic_live)
+    }
+
+    pub fn mic_peak(&self) -> f32 {
+        self.voice.as_ref().map_or(0.0, voice::Stream::mic_peak)
+    }
+
+    pub fn monitor_unavailable(&self) -> bool {
+        self.voice
+            .as_ref()
+            .is_some_and(voice::Stream::monitor_unavailable)
+    }
+
+    pub fn pump_voice(&mut self) -> Result<bool, OutputError> {
+        let Some(stream) = &mut self.voice else {
+            return Ok(false);
+        };
+        let result = stream.pump(&self.voice_settings);
+        if result.is_err() {
+            self.close_voice();
+        }
+        result
+    }
+
+    fn voice_piano(&mut self) -> Result<&mut crate::piano::Piano, OutputError> {
+        self.voice
+            .as_mut()
+            .map(voice::Stream::piano)
+            .ok_or(OutputError::VoiceUnavailable)
+    }
+
     pub fn press(
         &mut self,
         mode: Output,
@@ -538,6 +627,10 @@ impl Outputs {
     ) -> Result<(), OutputError> {
         if mode == Output::Preview {
             return self.midi_message(0x90, pitch, velocity);
+        }
+        if mode == Output::Voice {
+            self.voice_piano()?.press(pitch, velocity);
+            return Ok(());
         }
         let scan = usize::from(self.scan[key.base as usize]);
         if scan == 0 || scan >= self.held.len() {
@@ -558,6 +651,10 @@ impl Outputs {
     pub fn release(&mut self, mode: Output, pitch: u8, key: Key) -> Result<(), OutputError> {
         if mode == Output::Preview {
             return self.midi_message(0x80, pitch, 0);
+        }
+        if mode == Output::Voice {
+            self.voice_piano()?.release(pitch);
+            return Ok(());
         }
         let scan = usize::from(self.scan[key.base as usize]);
         if self.held.get(scan) == Some(&Some(pitch)) {
@@ -583,12 +680,24 @@ impl Outputs {
         if mode == Output::Preview {
             return self.midi_message(0xb0, 64, if down { 127 } else { 0 });
         }
+        if mode == Output::Voice {
+            self.voice_piano()?.sustain(down);
+            return Ok(());
+        }
         self.send_keyboard(&[keyboard(SPACE, !down)])?;
         self.pedal = down;
         Ok(())
     }
 
     pub fn reset(&mut self, mode: Output) {
+        if mode == Output::Voice {
+            if let Some(stream) = &mut self.voice
+                && stream.reset().is_err()
+            {
+                self.close_voice();
+            }
+            return;
+        }
         if mode == Output::Preview {
             if !self.midi.is_null() {
                 unsafe {

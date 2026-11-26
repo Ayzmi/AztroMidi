@@ -31,6 +31,37 @@ pub enum Output {
     #[default]
     Keyboard,
     Preview,
+    Voice,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct Voice {
+    pub destination: String,
+    pub microphone: String,
+    pub monitor: String,
+    pub live_keyboard: bool,
+    pub keep_mic_live: bool,
+    pub piano_level: f32,
+    pub mic_level: f32,
+    pub monitor_level: f32,
+    pub room: f32,
+}
+
+impl Default for Voice {
+    fn default() -> Self {
+        Self {
+            destination: String::new(),
+            microphone: String::new(),
+            monitor: String::new(),
+            live_keyboard: true,
+            keep_mic_live: false,
+            piano_level: 70.0,
+            mic_level: 85.0,
+            monitor_level: 70.0,
+            room: 18.0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -129,6 +160,7 @@ pub struct Settings {
     pub out_of_range: OutOfRange,
     pub sustain: Sustain,
     pub output: Output,
+    pub voice: Voice,
     pub velocity_keys: bool,
     pub auto_transpose: bool,
     pub skip_drums: bool,
@@ -165,6 +197,7 @@ impl Default for Settings {
             out_of_range: OutOfRange::default(),
             sustain: Sustain::default(),
             output: Output::default(),
+            voice: Voice::default(),
             velocity_keys: false,
             auto_transpose: true,
             skip_drums: true,
@@ -211,7 +244,7 @@ impl Settings {
             ("Layout", &["Keys61", "Keys88"][..]),
             ("OutOfRange", &["Fold", "Skip"]),
             ("Sustain", &["Off", "FollowPedal"]),
-            ("Output", &["Keyboard", "Background", "Preview"]),
+            ("Output", &["Keyboard", "Background", "Preview", "Voice"]),
             ("DropAction", &["Move", "Copy", "ListOnly"]),
         ] {
             if let Some(value) = saved.get_mut(key) {
@@ -257,6 +290,10 @@ impl Settings {
         settings.min_hold_ms = settings.min_hold_ms.clamp(5.0, 120.0);
         settings.max_hold_ms = settings.max_hold_ms.max(settings.min_hold_ms);
         settings.mini_opacity = settings.mini_opacity.clamp(0.4, 1.0);
+        settings.voice.piano_level = settings.voice.piano_level.clamp(0.0, 100.0);
+        settings.voice.mic_level = settings.voice.mic_level.clamp(0.0, 100.0);
+        settings.voice.monitor_level = settings.voice.monitor_level.clamp(0.0, 100.0);
+        settings.voice.room = settings.voice.room.clamp(0.0, 60.0);
         let h = &mut settings.humanize;
         h.timing_jitter_ms = h.timing_jitter_ms.clamp(0.0, 40.0);
         h.chord_roll_ms = h.chord_roll_ms.clamp(0.0, 60.0);
@@ -266,6 +303,14 @@ impl Settings {
         h.phrase_breath_ms = h.phrase_breath_ms.clamp(0.0, 150.0);
         h.mistake_chance_percent = h.mistake_chance_percent.clamp(0.0, 5.0);
         settings
+    }
+
+    pub fn playback_layout(&self) -> Layout {
+        if self.output == Output::Voice {
+            Layout::Keys88
+        } else {
+            self.layout
+        }
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
@@ -363,5 +408,20 @@ mod tests {
             Settings::from_json(br#"{"Output":"Background"}"#).output,
             Output::Keyboard
         );
+    }
+
+    #[test]
+    fn restores_voice_routing_without_changing_legacy_layout() {
+        let settings = Settings::from_json(
+            br#"{"Output":"voice","Layout":"Keys61","Voice":{"Destination":"output","Microphone":"input","Monitor":"headphones","MonitorLevel":42,"Room":100}}"#,
+        );
+        assert_eq!(settings.output, Output::Voice);
+        assert_eq!(settings.layout, Layout::Keys61);
+        assert_eq!(settings.playback_layout(), Layout::Keys88);
+        assert_eq!(settings.voice.destination, "output");
+        assert_eq!(settings.voice.microphone, "input");
+        assert_eq!(settings.voice.monitor, "headphones");
+        assert_eq!(settings.voice.monitor_level, 42.0);
+        assert_eq!(settings.voice.room, 60.0);
     }
 }

@@ -5,12 +5,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-26
+
+### Added
+- Voice Chat Piano output for Windows audio devices, with automatic VB-CABLE routing, an optional microphone mix, and separate piano, microphone and room reverb controls.
+- A sampled acoustic grand piano for Voice Chat Piano, with three velocity layers and MIDI sustain.
+- Local piano monitoring through a second playback device, with its own volume control.
+- Play the sampled piano live with the computer keyboard in Voice Chat Piano mode.
+- Keep the selected microphone live between songs and check its input level in the Mixer.
+
 ### Changed
+- Group desktop settings into Audio, Library & window, and Hotkeys tabs. Align controls and show long device names on hover.
 - Refine the player layout, with a clearer timeline and transport, a wider piano area at small window sizes, and separate scroll positions for each page.
 - Reuse library search results between frames and limit how often the mini player refreshes.
+- Prepare Voice Chat Piano devices ahead of playback and let the piano and room reverb decay on Pause and Stop.
 
 ### Fixed
 - Save settings off the UI thread and wait for the window to settle before saving its placement.
+- Capture microphones in their Windows mix format and preserve speech on an active input channel. Show the source level in the mic meter before it reaches the voice mix.
 
 ## [1.4.0] - 2026-11-26
 

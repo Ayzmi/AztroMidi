@@ -14,3 +14,4 @@ build.ps1 -linguist-detectable
 *.ico binary
 *.mid binary
 *.midi binary
+*.flacbank binary

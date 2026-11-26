@@ -105,9 +105,10 @@ fn primary(ui: &mut Ui, title: &str) -> egui::Response {
     )
 }
 
-const OUTPUTS: [(Output, &str); 2] = [
+const OUTPUTS: [(Output, &str); 3] = [
     (Output::Keyboard, "Roblox"),
     (Output::Preview, "Preview on this PC"),
+    (Output::Voice, "Voice Chat Piano"),
 ];
 
 fn choice<T: PartialEq + Copy>(
@@ -123,6 +124,7 @@ fn choice<T: PartialEq + Copy>(
         .map_or("", |(_, name)| *name);
     egui::ComboBox::from_id_salt(label)
         .width(width)
+        .truncate()
         .selected_text(selected)
         .show_ui(ui, |ui| {
             for (item, title) in choices {
@@ -147,19 +149,40 @@ fn quick_choice<T: PartialEq + Copy>(
 
 fn setting_row(ui: &mut Ui, title: &str, control: impl FnOnce(&mut Ui) -> egui::Response) {
     ui.push_id(title, |ui| {
+        let width = ui.available_width();
+        let control_width = (width * 0.52).min(264.0);
+        let label_width = (width - control_width - ui.spacing().item_spacing.x).max(0.0);
         ui.horizontal(|ui| {
-            let label_width = (ui.available_width() - 240.0).max(140.0);
             let label = ui.allocate_ui_with_layout(
                 egui::vec2(label_width, 30.0),
                 egui::Layout::left_to_right(Align::Center),
                 |ui| {
                     ui.set_min_width(label_width);
                     ui.add(egui::Label::new(title).truncate())
+                        .on_hover_text(title)
                 },
             );
-            control(ui).labelled_by(label.inner.id);
+            ui.allocate_ui_with_layout(
+                egui::vec2(control_width, 30.0),
+                egui::Layout::left_to_right(Align::Center),
+                |ui| {
+                    ui.set_width(control_width);
+                    ui.spacing_mut().slider_width = (control_width - 88.0).max(32.0);
+                    control(ui).labelled_by(label.inner.id);
+                },
+            );
         });
     });
+}
+
+fn setting_choice<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut T,
+    choices: &[(T, &str)],
+) -> egui::Response {
+    let width = ui.available_width();
+    choice(ui, label, value, choices, width)
 }
 
 fn setting_switch(ui: &mut Ui, title: &str, value: &mut bool) {
@@ -179,7 +202,7 @@ fn add_slider(ui: &mut Ui, slider: egui::Slider<'_>) -> egui::Response {
 
 fn settings_card(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) {
     card(ui, |ui| {
-        ui.label(RichText::new(title).size(17.0).strong());
+        ui.label(RichText::new(title).size(16.0).strong());
         ui.separator();
         ui.spacing_mut().item_spacing.y = 4.0;
         contents(ui);
@@ -188,6 +211,7 @@ fn settings_card(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) {
 
 impl Desktop {
     pub(super) fn render(&mut self, ctx: &egui::Context, snapshot: Snapshot) {
+        let previous_mode = self.settings.output;
         let previous_output = output_settings(&self.settings);
         let previous_schedule = schedule_settings(&self.settings);
         let previous_hotkeys = self.settings.hotkeys.clone();
@@ -196,17 +220,27 @@ impl Desktop {
             .frame(panel(NAVIGATION, 8))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    let color = if snapshot.waiting || snapshot.output_error.is_some() {
+                    let color = if snapshot.waiting
+                        || snapshot.output_error.is_some()
+                        || snapshot.monitor_unavailable
+                    {
                         WARNING
-                    } else if snapshot.playing() {
+                    } else if snapshot.playing() || snapshot.live {
                         ACCENT
                     } else {
                         MUTED
                     };
                     ui.label(RichText::new(snapshot.status()).color(color).strong());
                     ui.separator();
+                    if snapshot.mic_live {
+                        ui.label(RichText::new("Mic live").color(ACCENT));
+                        mic_meter(ui, snapshot.mic_peak, 48.0, 6.0);
+                        ui.separator();
+                    }
                     let hint = if let Some(error) = snapshot.output_error {
                         error.message()
+                    } else if snapshot.monitor_unavailable {
+                        "Monitor device unavailable. Choose another in Audio settings."
                     } else if self.library.importing() {
                         "Importing MIDI files…"
                     } else if snapshot.waiting {
@@ -268,13 +302,18 @@ impl Desktop {
         egui::CentralPanel::default()
             .frame(panel(BASE, 18))
             .show(ctx, |ui| {
+                if self.page == Page::Settings {
+                    ui.set_width(ui.available_width().min(880.0));
+                    settings_header(ui, &mut self.settings_tab);
+                }
+                let section = (self.page == Page::Settings).then(|| self.settings_tab.title());
                 egui::ScrollArea::vertical()
-                    .id_salt(self.page.title())
+                    .id_salt((self.page.title(), section))
                     .auto_shrink([false, false])
                     .show(ui, |ui| match self.page {
                         Page::Player => self.player(ui, snapshot),
                         Page::Humanize => self.humanize(ui),
-                        Page::Settings => self.preferences(ui),
+                        Page::Settings => self.preferences(ui, snapshot),
                     });
             });
         if output_settings(&self.settings) != previous_output {
@@ -286,7 +325,15 @@ impl Desktop {
         if self.settings.always_on_top != previous_top {
             self.update_window_level();
         }
-        if schedule_settings(&self.settings) != previous_schedule {
+        if previous_mode != self.settings.output
+            && (previous_mode == Output::Voice || self.settings.output == Output::Voice)
+        {
+            self.finished = 0;
+            self.rebuild(false);
+            if self.song.is_some() {
+                self.set_loaded_hint();
+            }
+        } else if schedule_settings(&self.settings) != previous_schedule {
             self.defer_rebuild();
         }
         if ctx.output(|o| o.cursor_icon) == egui::CursorIcon::PointingHand {
@@ -550,9 +597,13 @@ impl Desktop {
                     self.toggle_play(false);
                 }
                 if ui
-                    .add_enabled(snapshot.state != State::Stopped, egui::Button::new("Stop"))
+                    .add_enabled(
+                        snapshot.state != State::Stopped || snapshot.live,
+                        egui::Button::new("Stop"),
+                    )
                     .clicked()
                 {
+                    self.end_live_input();
                     self.engine.send(Command::Stop);
                 }
                 if ui.button("Previous").clicked() {
@@ -571,15 +622,22 @@ impl Desktop {
                     self.transpose_control(ui);
                 });
             }
-            ui.horizontal(|ui| {
-                quick_choice(ui, "Output", &mut self.settings.output, &OUTPUTS, 135.0);
-                quick_choice(
-                    ui,
-                    "Layout",
-                    &mut self.settings.layout,
-                    &[(Layout::Keys61, "61 keys"), (Layout::Keys88, "88 keys")],
-                    74.0,
-                );
+            ui.horizontal_wrapped(|ui| {
+                quick_choice(ui, "Output", &mut self.settings.output, &OUTPUTS, 145.0);
+                if self.settings.output == Output::Voice {
+                    if ui.small_button("Audio settings").clicked() {
+                        self.settings_tab = SettingsTab::Audio;
+                        self.show_page(Page::Settings);
+                    }
+                } else {
+                    quick_choice(
+                        ui,
+                        "Layout",
+                        &mut self.settings.layout,
+                        &[(Layout::Keys61, "61 keys"), (Layout::Keys88, "88 keys")],
+                        74.0,
+                    );
+                }
             });
             ui.horizontal_wrapped(|ui| {
                 ui.checkbox(&mut self.settings.repeat, "Loop");
@@ -588,11 +646,17 @@ impl Desktop {
             });
         });
         card(ui, |ui| {
-            let upcoming = playback::upcoming(&self.events, snapshot.index, 8);
+            let voice = self.settings.output == Output::Voice;
+            let upcoming =
+                playback::upcoming(&self.events, snapshot.index, 8, self.settings.output);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Piano").strong());
                 ui.separator();
-                ui.label(RichText::new("Next keys").small().color(MUTED));
+                ui.label(
+                    RichText::new(if voice { "Next notes" } else { "Next keys" })
+                        .small()
+                        .color(MUTED),
+                );
                 ui.add(
                     egui::Label::new(
                         RichText::new(if upcoming.is_empty() {
@@ -606,7 +670,18 @@ impl Desktop {
                     .truncate(),
                 );
             });
-            piano(ui, self.settings.layout, &snapshot.held);
+            piano(ui, self.settings.playback_layout(), &snapshot.held);
+            if voice {
+                ui.checkbox(&mut self.settings.voice.live_keyboard, "Play with keyboard");
+                if self.settings.voice.live_keyboard {
+                    let hint = if snapshot.playing() {
+                        "Pause or stop MIDI playback to play with the keyboard."
+                    } else {
+                        "Use the number row and letters. Hold Shift for black keys."
+                    };
+                    ui.label(RichText::new(hint).small().color(MUTED));
+                }
+            }
         });
         if let Some(song) = &mut self.song {
             let mut changed = false;
@@ -675,21 +750,34 @@ impl Desktop {
 
     fn transpose_control(&mut self, ui: &mut Ui) {
         let Some(song) = &mut self.song else { return };
+        let voice = self.settings.output == Output::Voice;
+        let current = song.transpose(self.settings.output);
         let transpose = ui
             .horizontal(|ui| {
                 ui.label(RichText::new("Transpose").color(MUTED));
                 let down = ui.button("−").on_hover_text("Transpose down").clicked();
-                ui.monospace(format!("{:+}", song.transpose));
+                ui.monospace(format!("{current:+}"));
                 let up = ui.button("+").on_hover_text("Transpose up").clicked();
-                if ui.small_button("Auto").clicked() {
-                    auto_transpose(song, &self.settings)
+                if ui
+                    .small_button(if voice { "Reset" } else { "Auto" })
+                    .clicked()
+                {
+                    if voice {
+                        0
+                    } else {
+                        auto_transpose(song, &self.settings)
+                    }
                 } else {
-                    (song.transpose + i32::from(up) - i32::from(down)).clamp(-48, 48)
+                    (current + i32::from(up) - i32::from(down)).clamp(-48, 48)
                 }
             })
             .inner;
-        if transpose != song.transpose {
-            song.transpose = transpose;
+        if transpose != current {
+            if voice {
+                song.voice_transpose = transpose;
+            } else {
+                song.transpose = transpose;
+            }
             self.rebuild(true);
         }
     }
@@ -787,15 +875,23 @@ impl Desktop {
         });
     }
 
-    fn preferences(&mut self, ui: &mut Ui) {
-        ui.heading("Settings");
+    fn preferences(&mut self, ui: &mut Ui, snapshot: Snapshot) {
+        match self.settings_tab {
+            SettingsTab::Audio => self.audio_settings(ui, snapshot),
+            SettingsTab::LibraryAndWindow => self.library_settings(ui),
+            SettingsTab::Hotkeys => self.hotkey_settings(ui),
+        }
+    }
+
+    fn audio_settings(&mut self, ui: &mut Ui, snapshot: Snapshot) {
         let s = &mut self.settings;
-        settings_card(ui, "Playback", |ui| {
-            setting_row(ui, "Output", |ui| {
-                choice(ui, "output", &mut s.output, &OUTPUTS, 192.0)
-            });
+        audio_devices(ui, s, &mut self.voice_devices);
+        if s.output == Output::Voice {
+            voice_mixer(ui, &mut s.voice, snapshot);
+        }
+        settings_card(ui, "MIDI playback", |ui| {
             setting_row(ui, "Out-of-range notes", |ui| {
-                choice(
+                setting_choice(
                     ui,
                     "out-of-range",
                     &mut s.out_of_range,
@@ -803,44 +899,48 @@ impl Desktop {
                         (OutOfRange::Fold, "Fold by octave"),
                         (OutOfRange::Skip, "Skip"),
                     ],
-                    192.0,
                 )
             });
-            setting_row(ui, "Sustain pedal", |ui| {
-                choice(
-                    ui,
-                    "sustain",
-                    &mut s.sustain,
-                    &[
-                        (Sustain::Off, "Off"),
-                        (Sustain::FollowPedal, "Follow MIDI pedal"),
-                    ],
-                    192.0,
-                )
-            });
-            setting_switch(ui, "Velocity keys", &mut s.velocity_keys);
-            setting_switch(ui, "Auto transpose on load", &mut s.auto_transpose);
             setting_switch(ui, "Skip drum tracks", &mut s.skip_drums);
-            setting_switch(ui, "Switch to Roblox on Play", &mut s.auto_focus_roblox);
-            setting_row(ui, "Countdown", |ui| {
-                add_slider(
+            if s.output != Output::Voice {
+                setting_row(ui, "Sustain pedal", |ui| {
+                    setting_choice(
+                        ui,
+                        "sustain",
+                        &mut s.sustain,
+                        &[
+                            (Sustain::Off, "Off"),
+                            (Sustain::FollowPedal, "Follow MIDI pedal"),
+                        ],
+                    )
+                });
+                setting_switch(ui, "Velocity keys", &mut s.velocity_keys);
+                setting_switch(ui, "Auto transpose on load", &mut s.auto_transpose);
+                setting_switch(ui, "Switch to Roblox on Play", &mut s.auto_focus_roblox);
+                setting_row(ui, "Countdown", |ui| {
+                    add_slider(
+                        ui,
+                        egui::Slider::new(&mut s.countdown_seconds, 0..=10).suffix(" s"),
+                    )
+                });
+                slider(
                     ui,
-                    egui::Slider::new(&mut s.countdown_seconds, 0..=10).suffix(" s"),
-                )
-            });
-            slider(
-                ui,
-                &mut s.min_hold_ms,
-                5.0,
-                120.0,
-                5.0,
-                " ms",
-                "Shortest key press",
-            );
+                    &mut s.min_hold_ms,
+                    5.0,
+                    120.0,
+                    5.0,
+                    " ms",
+                    "Shortest key press",
+                );
+            }
         });
+    }
+
+    fn library_settings(&mut self, ui: &mut Ui) {
+        let s = &mut self.settings;
         settings_card(ui, "Library", |ui| {
             setting_row(ui, "Dropped files", |ui| {
-                choice(
+                setting_choice(
                     ui,
                     "dropped files",
                     &mut s.drop_action,
@@ -849,15 +949,12 @@ impl Desktop {
                         (DropAction::Copy, "Copy into library"),
                         (DropAction::ListOnly, "Only add to list"),
                     ],
-                    192.0,
                 )
             });
         });
         let mut mini = false;
-        settings_card(ui, "Window", |ui| {
+        settings_card(ui, "Window and mini player", |ui| {
             setting_switch(ui, "Always on top", &mut s.always_on_top);
-        });
-        settings_card(ui, "Mini player", |ui| {
             setting_switch(ui, "Stick to Roblox", &mut s.mini_snap_to_roblox);
             let mut opacity = s.mini_opacity * 100.0;
             slider(ui, &mut opacity, 40.0, 100.0, 5.0, "%", "Opacity");
@@ -872,8 +969,14 @@ impl Desktop {
                 button
             });
         });
+        if mini {
+            self.toggle_mini();
+        }
+    }
+
+    fn hotkey_settings(&mut self, ui: &mut Ui) {
         settings_card(ui, "Global hotkeys", |ui| {
-            for (binding, label) in s.hotkeys.bindings_mut().into_iter().zip([
+            for (binding, label) in self.settings.hotkeys.bindings_mut().into_iter().zip([
                 "Play / Pause",
                 "Stop",
                 "Slow down",
@@ -884,7 +987,8 @@ impl Desktop {
             ]) {
                 setting_row(ui, label, |ui| {
                     egui::ComboBox::from_id_salt("hotkey")
-                        .width(192.0)
+                        .width(ui.available_width())
+                        .truncate()
                         .selected_text(binding.as_str())
                         .show_ui(ui, |ui| {
                             for key in win::HOTKEYS {
@@ -909,9 +1013,6 @@ impl Desktop {
                 );
             }
         });
-        if mini {
-            self.toggle_mini();
-        }
     }
 }
 
@@ -925,6 +1026,335 @@ enum ListAction {
     Remove,
 }
 
+fn settings_header(ui: &mut Ui, current: &mut SettingsTab) {
+    ui.heading("Settings");
+    ui.horizontal_wrapped(|ui| {
+        for tab in [
+            SettingsTab::Audio,
+            SettingsTab::LibraryAndWindow,
+            SettingsTab::Hotkeys,
+        ] {
+            let selected = *current == tab;
+            let text = RichText::new(tab.title()).color(if selected { ACCENT } else { MUTED });
+            let button = egui::Button::new(text)
+                .selected(selected)
+                .stroke(Stroke::NONE)
+                .min_size(egui::vec2(80.0, 30.0));
+            if ui.add(button).clicked() {
+                *current = tab;
+            }
+        }
+    });
+    ui.add_space(4.0);
+    ui.separator();
+}
+
+fn audio_devices(
+    ui: &mut Ui,
+    settings: &mut Settings,
+    devices: &mut Option<Result<crate::voice::Devices, String>>,
+) {
+    card(ui, |ui| {
+        let mut refresh = false;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Audio devices").size(16.0).strong());
+            if settings.output == Output::Voice {
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    refresh = ui.small_button("Refresh devices").clicked();
+                });
+            }
+        });
+        ui.separator();
+        ui.spacing_mut().item_spacing.y = 4.0;
+        setting_row(ui, "Output", |ui| {
+            setting_choice(ui, "output", &mut settings.output, &OUTPUTS)
+        });
+        if settings.output == Output::Voice {
+            voice_devices(ui, &mut settings.voice, devices, refresh);
+        }
+    });
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use crate::voice::{Devices, Endpoint};
+
+    #[test]
+    fn voice_settings_fit_with_long_device_names_and_live_input() {
+        let ctx = egui::Context::default();
+        setup(&ctx);
+        let mut settings = Settings {
+            output: Output::Voice,
+            ..Settings::default()
+        };
+        settings.voice.microphone = "mic".into();
+        settings.voice.monitor = "headphones".into();
+        let mut tab = SettingsTab::Audio;
+        let mut devices = Some(Ok(Devices {
+            destinations: vec![
+                Endpoint {
+                    id: "cable".into(),
+                    name: "CABLE Input (VB-Audio Virtual Cable)".into(),
+                },
+                Endpoint {
+                    id: "headphones".into(),
+                    name: "Headphones (Realtek(R) Audio Digital Playback Device)".into(),
+                },
+            ],
+            microphones: vec![Endpoint {
+                id: "mic".into(),
+                name: "Microphone (6- Rexus Xora-II Microphone USB Audio Device)".into(),
+            }],
+        }));
+        let snapshot = Snapshot {
+            mic_live: true,
+            mic_peak: 0.17,
+            ..Snapshot::default()
+        };
+        let width = 820;
+        let height = 640;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width as f32, height as f32),
+            )),
+            ..Default::default()
+        };
+        let mut bounds = [0.0; 4];
+        let _ = ctx.run(input, |ctx| {
+            egui::SidePanel::left("navigation")
+                .exact_width(142.0)
+                .frame(panel(NAVIGATION, 12))
+                .show(ctx, |ui| {
+                    ui.label(RichText::new(APP).size(22.0).strong());
+                    ui.add_space(7.0);
+                    for page in [Page::Player, Page::Humanize, Page::Settings] {
+                        let button =
+                            egui::Button::new(page.title()).selected(page == Page::Settings);
+                        let _ = ui.add_sized([ui.available_width(), 36.0], button);
+                    }
+                });
+            egui::CentralPanel::default()
+                .frame(panel(BASE, 18))
+                .show(ctx, |ui| {
+                    bounds[0] = ui.max_rect().right();
+                    settings_header(ui, &mut tab);
+                    bounds[1] = ui.min_rect().right();
+                    audio_devices(ui, &mut settings, &mut devices);
+                    bounds[2] = ui.min_rect().right();
+                    voice_mixer(ui, &mut settings.voice, snapshot);
+                    bounds[3] = ui.min_rect().right();
+                });
+        });
+        assert!(
+            bounds[3] <= bounds[0] + 0.5,
+            "settings exceed their column: {bounds:?}"
+        );
+    }
+}
+
+fn voice_devices(
+    ui: &mut Ui,
+    settings: &mut crate::settings::Voice,
+    devices: &mut Option<Result<crate::voice::Devices, String>>,
+    refresh: bool,
+) {
+    if refresh || devices.is_none() {
+        *devices = Some(crate::voice::Devices::scan().map_err(|error| error.to_string()));
+    }
+    match devices.as_ref() {
+        Some(Ok(devices)) => {
+            let auto = if devices.cable().is_some() {
+                "Automatic (VB-CABLE)"
+            } else {
+                "Automatic (VB-CABLE missing)"
+            };
+            endpoint_choice(
+                ui,
+                "Send audio to",
+                &mut settings.destination,
+                auto,
+                devices.destinations.iter(),
+            );
+            endpoint_choice(
+                ui,
+                "Microphone",
+                &mut settings.microphone,
+                "Off (piano only)",
+                devices.microphones.iter(),
+            );
+            let destination = &settings.destination;
+            if settings.monitor == *destination {
+                settings.monitor.clear();
+            }
+            let monitors = devices
+                .destinations
+                .iter()
+                .filter(|device| !device.is_virtual_cable() && device.id != *destination);
+            endpoint_choice(
+                ui,
+                "Monitor piano on",
+                &mut settings.monitor,
+                "Off",
+                monitors,
+            );
+            if settings.destination.is_empty() && devices.cable().is_none() {
+                ui.hyperlink_to("Get VB-CABLE for voice chat", "https://vb-audio.com/Cable/");
+            }
+        }
+        Some(Err(error)) => {
+            ui.label(RichText::new("Windows audio devices could not be listed.").color(WARNING))
+                .on_hover_text(error);
+        }
+        None => {}
+    }
+    ui.add_space(3.0);
+    ui.label(
+        RichText::new("In Roblox, choose CABLE Output as the microphone for VB-CABLE.")
+            .small()
+            .color(MUTED),
+    );
+    if settings.microphone.is_empty() {
+        ui.label(
+            RichText::new("Select your physical microphone above to speak or sing with piano.")
+                .small()
+                .color(ACCENT),
+        );
+    }
+}
+
+fn voice_mixer(ui: &mut Ui, settings: &mut crate::settings::Voice, snapshot: Snapshot) {
+    settings_card(ui, "Mixer", |ui| {
+        setting_row(ui, "Piano level", |ui| {
+            add_slider(
+                ui,
+                egui::Slider::new(&mut settings.piano_level, 0.0..=100.0)
+                    .step_by(1.0)
+                    .max_decimals(0)
+                    .suffix("%"),
+            )
+        });
+        if !settings.microphone.is_empty() {
+            setting_row(ui, "Keep mic live", |ui| {
+                let state = if settings.keep_mic_live { "On" } else { "Off" };
+                ui.checkbox(&mut settings.keep_mic_live, state)
+                    .on_hover_text(
+                        "Send microphone audio between songs with Voice Chat Piano selected.",
+                    )
+            });
+            setting_row(ui, "Microphone level", |ui| {
+                add_slider(
+                    ui,
+                    egui::Slider::new(&mut settings.mic_level, 0.0..=100.0)
+                        .step_by(1.0)
+                        .max_decimals(0)
+                        .suffix("%"),
+                )
+            });
+            setting_row(ui, "Mic signal", |ui| {
+                if snapshot.mic_live {
+                    let width = ui.available_width();
+                    mic_meter(ui, snapshot.mic_peak, width, 8.0)
+                } else {
+                    ui.label(
+                        RichText::new("Play a song or turn on Keep mic live")
+                            .small()
+                            .color(MUTED),
+                    )
+                }
+            });
+        }
+        if !settings.monitor.is_empty() {
+            setting_row(ui, "Monitor level", |ui| {
+                add_slider(
+                    ui,
+                    egui::Slider::new(&mut settings.monitor_level, 0.0..=100.0)
+                        .step_by(1.0)
+                        .max_decimals(0)
+                        .suffix("%"),
+                )
+            });
+        }
+        setting_row(ui, "Room reverb", |ui| {
+            add_slider(
+                ui,
+                egui::Slider::new(&mut settings.room, 0.0..=60.0)
+                    .step_by(1.0)
+                    .max_decimals(0)
+                    .suffix("%"),
+            )
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.hyperlink_to(
+                RichText::new("Salamander Grand Piano V3").small(),
+                "https://github.com/sfzinstruments/SalamanderGrandPiano",
+            );
+            ui.label(
+                RichText::new("by Alexander Holm (adapted)")
+                    .small()
+                    .color(MUTED),
+            );
+            ui.hyperlink_to(
+                RichText::new("CC BY 3.0").small(),
+                "https://creativecommons.org/licenses/by/3.0/",
+            );
+        });
+    });
+}
+
+fn mic_meter(ui: &mut Ui, peak: f32, width: f32, height: f32) -> egui::Response {
+    ui.scope(|ui| {
+        ui.visuals_mut().extreme_bg_color = CONTROL;
+        ui.add(
+            egui::ProgressBar::new(peak.sqrt())
+                .fill(ACCENT)
+                .desired_width(width)
+                .desired_height(height),
+        )
+        .on_hover_text("Live microphone input level")
+    })
+    .inner
+}
+
+fn endpoint_choice<'a>(
+    ui: &mut Ui,
+    label: &str,
+    selected: &mut String,
+    default: &str,
+    devices: impl Iterator<Item = &'a crate::voice::Endpoint> + Clone,
+) {
+    setting_row(ui, label, |ui| {
+        let text = if selected.is_empty() {
+            default
+        } else {
+            devices
+                .clone()
+                .find(|device| device.id == *selected)
+                .map_or("Device unavailable", |device| device.name.as_str())
+        };
+        egui::ComboBox::from_id_salt(label)
+            .width(ui.available_width())
+            .truncate()
+            .selected_text(text)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(selected.is_empty(), default).clicked() {
+                    selected.clear();
+                }
+                for device in devices {
+                    if ui
+                        .selectable_label(device.id == *selected, &device.name)
+                        .clicked()
+                    {
+                        selected.clone_from(&device.id);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(text)
+    });
+}
+
 fn slider(ui: &mut Ui, value: &mut f64, min: f64, max: f64, step: f64, unit: &str, title: &str) {
     setting_row(ui, title, |ui| {
         add_slider(
@@ -936,8 +1366,13 @@ fn slider(ui: &mut Ui, value: &mut f64, min: f64, max: f64, step: f64, unit: &st
     });
 }
 
-fn output_settings(settings: &Settings) -> (Output, f64, bool) {
-    (settings.output, settings.speed, settings.velocity_keys)
+fn output_settings(settings: &Settings) -> (Output, f64, bool, crate::settings::Voice) {
+    (
+        settings.output,
+        settings.speed,
+        settings.velocity_keys,
+        settings.voice.clone(),
+    )
 }
 
 fn schedule_settings(settings: &Settings) -> (Layout, Humanize, OutOfRange, Sustain, bool, f64) {

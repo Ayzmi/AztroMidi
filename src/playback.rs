@@ -2,7 +2,7 @@ use crate::{
     humanize::Humanizer,
     keys,
     schedule::{Action, Event},
-    settings::Output,
+    settings::{Output, Voice},
     win::{self, OutputError},
 };
 use eframe::egui;
@@ -28,6 +28,10 @@ pub struct Snapshot {
     pub length: f64,
     pub countdown: f64,
     pub waiting: bool,
+    pub mic_live: bool,
+    pub mic_peak: f32,
+    pub monitor_unavailable: bool,
+    pub live: bool,
     pub output_error: Option<OutputError>,
     pub index: usize,
     pub generation: u64,
@@ -43,6 +47,10 @@ impl Default for Snapshot {
             length: 0.0,
             countdown: 0.0,
             waiting: false,
+            mic_live: false,
+            mic_peak: 0.0,
+            monitor_unavailable: false,
+            live: false,
             output_error: None,
             index: 0,
             generation: 0,
@@ -60,6 +68,9 @@ impl Snapshot {
     pub fn status(self) -> &'static str {
         if self.output_error.is_some() {
             return "Output unavailable";
+        }
+        if self.live {
+            return "Live piano";
         }
         match self.state {
             State::Stopped => "Ready",
@@ -82,11 +93,17 @@ pub enum Command {
         output: Output,
         speed: f64,
         velocity: bool,
+        voice: Voice,
     },
     Play(f64),
     Pause,
     Stop,
     Seek(f64),
+    LiveKey {
+        pitch: u8,
+        down: bool,
+    },
+    EndLive,
     Shutdown,
 }
 
@@ -130,6 +147,17 @@ impl Drop for Engine {
 }
 
 trait Device {
+    fn configure_voice(&mut self, _settings: Voice) -> bool {
+        false
+    }
+    fn prepare(&mut self, _output: Output) -> Result<bool, OutputError> {
+        Ok(false)
+    }
+    fn finish_voice(&mut self) {}
+    fn warm_voice(&mut self) -> Result<(), OutputError> {
+        Ok(())
+    }
+    fn close_voice(&mut self) {}
     fn ready(&self, output: Output) -> bool;
     fn release_pending(&self) -> bool;
     fn retry_release(&mut self);
@@ -147,8 +175,27 @@ trait Device {
 }
 
 impl Device for win::Outputs {
+    fn configure_voice(&mut self, settings: Voice) -> bool {
+        self.configure_voice(settings)
+    }
+    fn prepare(&mut self, output: Output) -> Result<bool, OutputError> {
+        if output == Output::Voice {
+            self.prepare_voice()
+        } else {
+            Ok(false)
+        }
+    }
+    fn finish_voice(&mut self) {
+        self.finish_voice();
+    }
+    fn warm_voice(&mut self) -> Result<(), OutputError> {
+        self.warm_voice()
+    }
+    fn close_voice(&mut self) {
+        self.close_voice();
+    }
     fn ready(&self, output: Output) -> bool {
-        output == Output::Preview || win::roblox_focused()
+        output != Output::Keyboard || win::roblox_focused()
     }
     fn release_pending(&self) -> bool {
         self.waiting_for_release()
@@ -192,6 +239,7 @@ struct Player {
     restore_sustain: bool,
     last_tick: Instant,
     start_at: Option<Instant>,
+    live_until: Option<Instant>,
 }
 
 impl Player {
@@ -209,13 +257,73 @@ impl Player {
             restore_sustain: false,
             last_tick: Instant::now(),
             start_at: None,
+            live_until: None,
         }
     }
 
     fn clear(&mut self, device: &mut impl Device) {
-        if self.sustain || self.snapshot.held.iter().any(|held| *held) || device.release_pending() {
+        if self.output == Output::Voice
+            || self.sustain
+            || self.snapshot.held.iter().any(|held| *held)
+            || device.release_pending()
+        {
             device.reset(self.output);
         }
+        self.snapshot.live = false;
+        self.live_until = None;
+        self.clear_keys();
+    }
+
+    fn end_live(&mut self, device: &mut impl Device) {
+        if self.snapshot.live {
+            device.finish_voice();
+            self.snapshot.live = false;
+            self.live_until = None;
+            self.clear_keys();
+        }
+    }
+
+    fn stop_notes(&mut self, device: &mut impl Device) {
+        if self.output == Output::Voice {
+            device.finish_voice();
+            self.snapshot.live = false;
+            self.live_until = None;
+            self.clear_keys();
+        } else {
+            self.clear(device);
+        }
+    }
+
+    fn live_key(&mut self, pitch: u8, down: bool, device: &mut impl Device) {
+        if self.output != Output::Voice || self.snapshot.playing() {
+            return;
+        }
+        let Some(key) = keys::lookup(pitch) else {
+            return;
+        };
+        if self.snapshot.held[pitch as usize] == down {
+            return;
+        }
+        let result = if down {
+            device
+                .prepare(Output::Voice)
+                .and_then(|_| device.press(Output::Voice, pitch, key, 88))
+        } else {
+            device.release(Output::Voice, pitch, key)
+        };
+        if let Err(error) = result {
+            self.clear(device);
+            self.snapshot.output_error = Some(error);
+            return;
+        }
+        self.snapshot.output_error = None;
+        self.snapshot.held[pitch as usize] = down;
+        self.snapshot.live = true;
+        self.live_until = (!self.snapshot.held.iter().any(|held| *held))
+            .then(|| Instant::now() + Duration::from_secs(3));
+    }
+
+    fn clear_keys(&mut self) {
         self.owners.fill(None);
         self.snapshot.held.fill(false);
         self.last_bucket = None;
@@ -265,17 +373,39 @@ impl Player {
                 output,
                 speed,
                 velocity,
+                voice,
             } => {
-                if self.output != output {
+                let keep_mic_live = voice.keep_mic_live && !voice.microphone.is_empty();
+                let voice_route_changed = device.configure_voice(voice);
+                let mode_changed = self.output != output;
+                if mode_changed || (output == Output::Voice && voice_route_changed) {
                     self.clear(device);
+                    if mode_changed && (self.output == Output::Voice || output == Output::Voice) {
+                        self.seek(0.0);
+                        self.snapshot.state = State::Stopped;
+                        self.snapshot.countdown = 0.0;
+                        self.start_at = None;
+                    }
                     self.output = output;
                     self.snapshot.waiting = false;
                     self.snapshot.output_error = None;
+                    if mode_changed && output != Output::Voice {
+                        device.close_voice();
+                    }
+                }
+                if output == Output::Voice && (mode_changed || voice_route_changed || keep_mic_live)
+                {
+                    match device.warm_voice() {
+                        Ok(()) if keep_mic_live => self.snapshot.output_error = None,
+                        Err(error) if keep_mic_live => self.snapshot.output_error = Some(error),
+                        _ => {}
+                    }
                 }
                 self.speed = speed;
                 self.velocity_on = velocity;
             }
             Command::Play(countdown) if !self.events.is_empty() => {
+                self.end_live(device);
                 self.snapshot.output_error = None;
                 if self.snapshot.index >= self.events.len() {
                     self.seek(0.0);
@@ -291,7 +421,7 @@ impl Player {
                 }
             }
             Command::Pause => {
-                self.clear(device);
+                self.stop_notes(device);
                 if self.snapshot.playing() {
                     self.snapshot.state = State::Paused;
                 }
@@ -300,7 +430,7 @@ impl Player {
                 self.snapshot.waiting = false;
             }
             Command::Stop => {
-                self.clear(device);
+                self.stop_notes(device);
                 self.seek(0.0);
                 self.snapshot.state = State::Stopped;
                 self.snapshot.output_error = None;
@@ -312,6 +442,8 @@ impl Player {
                 self.clear(device);
                 self.seek(position);
             }
+            Command::LiveKey { pitch, down } => self.live_key(pitch, down, device),
+            Command::EndLive => self.end_live(device),
             Command::Shutdown => {
                 self.clear(device);
                 return false;
@@ -323,7 +455,7 @@ impl Player {
 
     fn tick(&mut self, now: Instant, device: &mut impl Device) -> Option<(Duration, bool)> {
         device.retry_release();
-        let dt = now.saturating_duration_since(self.last_tick).as_secs_f64();
+        let mut dt = now.saturating_duration_since(self.last_tick).as_secs_f64();
         self.last_tick = now;
         if let Some(start_at) = self.start_at {
             if now < start_at {
@@ -336,6 +468,12 @@ impl Player {
             return Some((Duration::ZERO, false));
         }
         if self.snapshot.state != State::Playing {
+            if self.live_until.is_some_and(|until| now >= until) {
+                self.end_live(device);
+            }
+            if let Some(until) = self.live_until {
+                return Some((until.saturating_duration_since(now), false));
+            }
             return device
                 .release_pending()
                 .then_some((Duration::from_millis(40), false));
@@ -348,6 +486,14 @@ impl Player {
             return Some((Duration::from_millis(30), false));
         }
 
+        match device.prepare(self.output) {
+            Ok(true) => {
+                self.last_tick = Instant::now();
+                dt = 0.0;
+            }
+            Ok(false) => {}
+            Err(error) => return self.output_failed(error, device),
+        }
         if let Err(error) = self.restore_pedal(device) {
             return self.output_failed(error, device);
         }
@@ -372,7 +518,7 @@ impl Player {
             }
             self.snapshot.index += 1;
         }
-        self.clear(device);
+        self.stop_notes(device);
         self.snapshot.state = State::Stopped;
         self.snapshot.finished += 1;
         device
@@ -471,19 +617,47 @@ fn run(receiver: Receiver<Command>, shared: Arc<Mutex<Snapshot>>, ctx: egui::Con
         {
             break;
         }
-        if player.snapshot.playing() && timer.is_none() {
+        if (player.snapshot.playing() || player.snapshot.live) && timer.is_none() {
             timer = Some(win::TimerResolution::new());
         }
         let now = Instant::now();
-        let (deadline, precise) = player
+        let (mut deadline, mut precise) = player
             .tick(now, &mut device)
             .map_or((None, false), |(wait, precise)| (Some(now + wait), precise));
-        if !player.snapshot.playing() {
+        let audio_active = match device.pump_voice() {
+            Ok(active) => active,
+            Err(error) => {
+                if player.snapshot.playing() {
+                    let _ = player.output_failed(error, &mut device);
+                } else {
+                    player.clear(&mut device);
+                    player.snapshot.output_error = Some(error);
+                }
+                false
+            }
+        };
+        if audio_active {
+            if timer.is_none() {
+                timer = Some(win::TimerResolution::new());
+            }
+            let audio_tick = now + Duration::from_millis(5);
+            if deadline.is_none_or(|deadline| deadline > audio_tick) {
+                deadline = Some(audio_tick);
+                precise = false;
+            }
+        }
+        if !player.snapshot.playing() && !audio_active {
             timer = None;
         }
+        player.snapshot.mic_live = device.mic_live();
+        player.snapshot.mic_peak = device.mic_peak();
+        player.snapshot.monitor_unavailable = device.monitor_unavailable();
         let status = player.snapshot;
         let state_changed = previous.state != status.state
             || previous.waiting != status.waiting
+            || previous.mic_live != status.mic_live
+            || previous.monitor_unavailable != status.monitor_unavailable
+            || previous.live != status.live
             || previous.output_error != status.output_error
             || previous.generation != status.generation
             || previous.finished != status.finished;
@@ -536,7 +710,7 @@ fn next_command(
     }
 }
 
-pub fn upcoming(events: &[Event], index: usize, count: usize) -> String {
+pub fn upcoming(events: &[Event], index: usize, count: usize, output: Output) -> String {
     let mut events = events
         .iter()
         .skip(index)
@@ -551,7 +725,18 @@ pub fn upcoming(events: &[Event], index: usize, count: usize) -> String {
             std::iter::once(first).chain(std::iter::from_fn(|| events.next_if(|e| e.time < end)))
         {
             if let Some(key) = keys::lookup(event.pitch) {
-                let label = key.display();
+                let label = if output == Output::Voice {
+                    const NOTES: [&str; 12] = [
+                        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+                    ];
+                    format!(
+                        "{}{}",
+                        NOTES[(event.pitch % 12) as usize],
+                        event.pitch / 12 - 1
+                    )
+                } else {
+                    key.display()
+                };
                 if !labels.contains(&label) {
                     labels.push(label);
                 }
@@ -577,9 +762,14 @@ mod tests {
         resets: usize,
         next_error: Option<OutputError>,
         pedal: Vec<bool>,
+        finishes: usize,
     }
 
     impl Device for Recorder {
+        fn finish_voice(&mut self) {
+            self.finishes += 1;
+        }
+
         fn ready(&self, output: Output) -> bool {
             output == Output::Preview || self.focused
         }
@@ -653,6 +843,57 @@ mod tests {
         player.command(Command::Pause, &mut recorder);
         assert_eq!(recorder.resets, 1);
         assert_eq!(player.snapshot.state, State::Paused);
+    }
+
+    #[test]
+    fn live_piano_uses_voice_output_and_releases_on_exit() {
+        let mut player = Player::new();
+        let mut recorder = Recorder::default();
+        let press = || Command::LiveKey {
+            pitch: 60,
+            down: true,
+        };
+
+        player.command(press(), &mut recorder);
+        assert_eq!(recorder.presses, 0);
+        player.output = Output::Voice;
+        player.command(press(), &mut recorder);
+        player.command(press(), &mut recorder);
+        assert_eq!(recorder.presses, 1);
+        assert!(player.snapshot.held[60]);
+        assert!(player.snapshot.live);
+        assert!(!player.snapshot.playing());
+        player.command(Command::EndLive, &mut recorder);
+        assert_eq!(recorder.finishes, 1);
+        assert!(!player.snapshot.held[60]);
+        assert!(!player.snapshot.live);
+        player.command(press(), &mut recorder);
+        player.command(
+            Command::LiveKey {
+                pitch: 60,
+                down: false,
+            },
+            &mut recorder,
+        );
+        player.tick(player.live_until.unwrap(), &mut recorder);
+        assert_eq!(recorder.finishes, 2);
+        assert!(!player.snapshot.live);
+    }
+
+    #[test]
+    fn stopping_voice_playback_leaves_a_piano_tail() {
+        let mut player = Player::new();
+        let mut recorder = Recorder::default();
+        player.output = Output::Voice;
+        player.snapshot.state = State::Playing;
+        player.snapshot.held[60] = true;
+
+        player.command(Command::Stop, &mut recorder);
+
+        assert_eq!(recorder.finishes, 1);
+        assert_eq!(recorder.resets, 0);
+        assert!(!player.snapshot.held[60]);
+        assert_eq!(player.snapshot.state, State::Stopped);
     }
 
     #[test]
